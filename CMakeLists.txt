@@ -1,4 +1,4 @@
-set(TARGET "mg-ev-laplace")
+set(TARGET "mg-ev-estimator")
 
 set(TARGET_SRC
   ${TARGET}.cc
