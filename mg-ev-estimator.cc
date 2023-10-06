@@ -13,6 +13,8 @@
 //
 // ---------------------------------------------------------------------
 
+#include <deal.II/base/geometric_utilities.h>
+
 #include <deal.II/dofs/dof_handler.h>
 
 #include <deal.II/numerics/data_out.h>
@@ -28,6 +30,26 @@
 #include <fstream>
 
 using namespace dealii;
+
+
+template <int dim>
+class Solution : public Function<dim>
+{
+public:
+  Solution()
+    : Function<dim>()
+  {
+    Assert(dim > 1, ExcNotImplemented());
+  }
+
+  virtual double value(const Point<dim> &p, const unsigned int /*component*/) const override
+  {
+    const std::array<double, 2> polar = GeometricUtilities::Coordinates::to_spherical(Point<2>(p[0], p[1]));
+
+    constexpr double alpha = 2./3.;
+    return std::pow(polar[0], alpha) * std::sin(alpha * polar[1]);
+  }
+};
 
 
 
