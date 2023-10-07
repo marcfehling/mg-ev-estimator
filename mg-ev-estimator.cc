@@ -15,16 +15,16 @@
 
 #include <deal.II/base/convergence_table.h>
 #include <deal.II/base/mg_level_object.h>
-#include <deal.II/base/signaling_nan.h>
 #include <deal.II/base/quadrature_lib.h>
+#include <deal.II/base/signaling_nan.h>
 
 #include <deal.II/dofs/dof_handler.h>
 
 #include <deal.II/fe/fe_q.h>
 
+#include <deal.II/grid/filtered_iterator.h>
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/tria.h>
-#include <deal.II/grid/filtered_iterator.h>
 
 #include <deal.II/hp/fe_collection.h>
 #include <deal.II/hp/q_collection.h>
@@ -50,18 +50,19 @@ using namespace dealii;
 
 namespace
 {
-  template<int dim, int spacedim>
+  template <int dim, int spacedim>
   unsigned int
   get_max_active_fe_degree(const DoFHandler<dim, spacedim> &dof_handler)
   {
     unsigned int max = 0;
 
-    for (auto &cell : dof_handler.active_cell_iterators() | IteratorFilters::LocallyOwnedCell())
+    for (auto &cell : dof_handler.active_cell_iterators() |
+                        IteratorFilters::LocallyOwnedCell())
       max = std::max(max, cell->get_fe().degree);
 
     return Utilities::MPI::max(max, MPI_COMM_WORLD);
   };
-}
+} // namespace
 
 
 
@@ -71,22 +72,28 @@ class Problem
 public:
   Problem();
 
-  void run();
+  void
+  run();
 
 private:
-  void setup_scenario();
+  void
+  setup_scenario();
 
-  void setup_mg_matrices();
-  void estimate_eigenvalues();
+  void
+  setup_mg_matrices();
+  void
+  estimate_eigenvalues();
 
-  void output_eigenvalues_and_vtk();
-  void write_vtk(const DoFHandler<dim, spacedim>&, const std::string &);
+  void
+  output_eigenvalues_and_vtk();
+  void
+  write_vtk(const DoFHandler<dim, spacedim> &, const std::string &);
 
   Triangulation<dim, spacedim> triangulation;
   DoFHandler<dim, spacedim>    dof_handler;
 
-  hp::FECollection<dim, spacedim>      fe_collection;
-  hp::QCollection<dim>                 quadrature_collection;
+  hp::FECollection<dim, spacedim> fe_collection;
+  hp::QCollection<dim>            quadrature_collection;
 
   using VectorType                 = Vector<double>;
   using LevelMatrixType            = SparseMatrix<double>;
@@ -95,10 +102,11 @@ private:
   // using LevelMatrixType = MatrixFreeOperators::LaplaceOperator<...>;
   // using SmootherPreconditionerType = DiagonalMatrix<VectorType>;
 
-  std::vector<std::shared_ptr<const Triangulation<dim, spacedim>>> mg_triangulations;
-  MGLevelObject<DoFHandler<dim, spacedim>>                         mg_dof_handlers;
-  MGLevelObject<SparsityPattern>                                   mg_sparsity_patterns;
-  MGLevelObject<LevelMatrixType>                                   mg_matrices;
+  std::vector<std::shared_ptr<const Triangulation<dim, spacedim>>>
+                                           mg_triangulations;
+  MGLevelObject<DoFHandler<dim, spacedim>> mg_dof_handlers;
+  MGLevelObject<SparsityPattern>           mg_sparsity_patterns;
+  MGLevelObject<LevelMatrixType>           mg_matrices;
 
   std::vector<double> min_eigenvalues;
   std::vector<double> max_eigenvalues;
@@ -106,14 +114,14 @@ private:
 
 
 
-template<int dim, int spacedim>
+template <int dim, int spacedim>
 Problem<dim, spacedim>::Problem()
-: dof_handler(triangulation)
+  : dof_handler(triangulation)
 {}
 
 
 
-template<int dim, int spacedim>
+template <int dim, int spacedim>
 void
 Problem<dim, spacedim>::setup_scenario()
 {
@@ -152,12 +160,13 @@ Problem<dim, spacedim>::setup_scenario()
   // hp-refine center part
   Assert(dim > 1, ExcMessage("Setup works only for dim > 1."));
   Assert(fe_collection.size() > 2, ExcMessage("We need at least two FEs."));
-  for(const auto& cell : dof_handler.active_cell_iterators() | IteratorFilters::LocallyOwnedCell())
+  for (const auto &cell : dof_handler.active_cell_iterators() |
+                            IteratorFilters::LocallyOwnedCell())
     {
       // set all cells to second to last FE
       cell->set_active_fe_index(fe_collection.size() - 2);
 
-      const auto& center = cell->center();
+      const auto &center = cell->center();
       if (std::abs(center[0]) < 0.5 && std::abs(center[1]) < 0.5)
         {
           if (center[0] < -0.25 || center[1] > 0.25)
@@ -175,22 +184,26 @@ Problem<dim, spacedim>::setup_scenario()
 
 
 
-template<int dim, int spacedim>
+template <int dim, int spacedim>
 void
 Problem<dim, spacedim>::setup_mg_matrices()
 {
-  const auto p_sequence = MGTransferGlobalCoarseningTools::PolynomialCoarseningSequenceType::decrease_by_one;
+  const auto p_sequence = MGTransferGlobalCoarseningTools::
+    PolynomialCoarseningSequenceType::decrease_by_one;
 
   std::map<unsigned int, unsigned int> fe_index_for_degree;
   for (unsigned int i = 0; i < fe_collection.size(); ++i)
     fe_index_for_degree[dof_handler.get_fe(i).degree] = i;
 
-  mg_triangulations = MGTransferGlobalCoarseningTools::create_geometric_coarsening_sequence(triangulation);
+  mg_triangulations =
+    MGTransferGlobalCoarseningTools::create_geometric_coarsening_sequence(
+      triangulation);
 
   const unsigned int n_h_levels = mg_triangulations.size() - 1;
   const unsigned int n_p_levels =
     MGTransferGlobalCoarseningTools::create_polynomial_coarsening_sequence(
-      get_max_active_fe_degree(dof_handler), p_sequence).size();
+      get_max_active_fe_degree(dof_handler), p_sequence)
+      .size();
 
   const unsigned int minlevel = 0;
   const unsigned int maxlevel = n_h_levels + n_p_levels - 1;
@@ -232,8 +245,9 @@ Problem<dim, spacedim>::setup_mg_matrices()
               if (cell->is_locally_owned())
                 {
                   const unsigned int next_degree =
-                    MGTransferGlobalCoarseningTools::create_next_polynomial_coarsening_degree(
-                      cell_other->get_fe().degree, p_sequence);
+                    MGTransferGlobalCoarseningTools::
+                      create_next_polynomial_coarsening_degree(
+                        cell_other->get_fe().degree, p_sequence);
 
                   cell->set_active_fe_index(fe_index_for_degree[next_degree]);
                 }
@@ -244,7 +258,8 @@ Problem<dim, spacedim>::setup_mg_matrices()
       mg_dof_handlers[l].distribute_dofs(fe_collection);
     }
 
-  MGLevelObject<AffineConstraints<typename LevelMatrixType::value_type>> mg_constraints(minlevel, maxlevel);
+  MGLevelObject<AffineConstraints<typename LevelMatrixType::value_type>>
+    mg_constraints(minlevel, maxlevel);
   for (unsigned int level = minlevel; level <= maxlevel; level++)
     {
       const auto &dof_handler      = mg_dof_handlers[level];
@@ -257,8 +272,10 @@ Problem<dim, spacedim>::setup_mg_matrices()
       // ... constraints (with homogenous Dirichlet BC)
       constraints.clear();
       DoFTools::make_hanging_node_constraints(dof_handler, constraints);
-      VectorTools::interpolate_boundary_values(
-        dof_handler, 0, Functions::ZeroFunction<dim>(), constraints);
+      VectorTools::interpolate_boundary_values(dof_handler,
+                                               0,
+                                               Functions::ZeroFunction<dim>(),
+                                               constraints);
       constraints.close();
 
       // ... matrices
@@ -270,11 +287,13 @@ Problem<dim, spacedim>::setup_mg_matrices()
       sparsity_pattern.copy_from(dsp);
 
       matrix.reinit(sparsity_pattern);
-      MatrixCreator::create_laplace_matrix(dof_handler,
-                                           quadrature_collection,
-                                           matrix,
-                                           (const Function<spacedim, typename LevelMatrixType::value_type> *const)nullptr,
-                                           constraints);
+      MatrixCreator::create_laplace_matrix(
+        dof_handler,
+        quadrature_collection,
+        matrix,
+        (const Function<spacedim, typename LevelMatrixType::value_type>
+           *const)nullptr,
+        constraints);
 
       // MatrixFree: ... operators
       // [...]
@@ -283,22 +302,27 @@ Problem<dim, spacedim>::setup_mg_matrices()
 
 
 
-template<int dim, int spacedim>
+template <int dim, int spacedim>
 void
 Problem<dim, spacedim>::estimate_eigenvalues()
 {
-  using SmootherType = PreconditionChebyshev<LevelMatrixType, VectorType, SmootherPreconditionerType>;
+  using SmootherType = PreconditionChebyshev<LevelMatrixType,
+                                             VectorType,
+                                             SmootherPreconditionerType>;
 
   // Initialize smoothers.
   const unsigned int min_level = mg_matrices.min_level();
   const unsigned int max_level = mg_matrices.max_level();
 
-  MGLevelObject<typename SmootherType::AdditionalData> smoother_data(min_level, max_level);
+  MGLevelObject<typename SmootherType::AdditionalData> smoother_data(min_level,
+                                                                     max_level);
   for (unsigned int level = min_level; level <= max_level; level++)
     {
-      smoother_data[level].preconditioner = std::make_shared<SmootherPreconditionerType>();
+      smoother_data[level].preconditioner =
+        std::make_shared<SmootherPreconditionerType>();
 
-      // MatrixFree: mg_matrices[level]->compute_inverse_diagonal(smoother_data[level].preconditioner->get_vector());
+      // MatrixFree:
+      // mg_matrices[level]->compute_inverse_diagonal(smoother_data[level].preconditioner->get_vector());
       smoother_data[level].preconditioner->initialize(mg_matrices[level]);
 
       smoother_data[level].smoothing_range     = 20.;
@@ -328,7 +352,7 @@ Problem<dim, spacedim>::estimate_eigenvalues()
 
 
 
-template<int dim, int spacedim>
+template <int dim, int spacedim>
 void
 Problem<dim, spacedim>::output_eigenvalues_and_vtk()
 {
@@ -339,12 +363,16 @@ Problem<dim, spacedim>::output_eigenvalues_and_vtk()
   for (unsigned int level = min_level; level <= max_level; ++level)
     {
       table.add_value("mg", level);
-      table.add_value("n_levels", mg_dof_handlers[level].get_triangulation().n_levels());
-      table.add_value("max_degree", get_max_active_fe_degree(mg_dof_handlers[level]));
+      table.add_value("n_levels",
+                      mg_dof_handlers[level].get_triangulation().n_levels());
+      table.add_value("max_degree",
+                      get_max_active_fe_degree(mg_dof_handlers[level]));
       table.add_value("min_eigenvalue", min_eigenvalues[level]);
       table.add_value("max_eigenvalue", max_eigenvalues[level]);
 
-      write_vtk(mg_dof_handlers[level], "mg_" + Utilities::int_to_string(dim) + "d_level-" + Utilities::int_to_string(level) + ".vtk");
+      write_vtk(mg_dof_handlers[level],
+                "mg_" + Utilities::int_to_string(dim) + "d_level-" +
+                  Utilities::int_to_string(level) + ".vtk");
     }
 
   std::cout << dim << "d:" << std::endl;
@@ -353,12 +381,14 @@ Problem<dim, spacedim>::output_eigenvalues_and_vtk()
 
 
 
-template<int dim, int spacedim>
+template <int dim, int spacedim>
 void
-Problem<dim, spacedim>::write_vtk(const DoFHandler<dim, spacedim>& dof_handler, const std::string &filename)
+Problem<dim, spacedim>::write_vtk(const DoFHandler<dim, spacedim> &dof_handler,
+                                  const std::string               &filename)
 {
   Vector<float> fe_degrees(dof_handler.get_triangulation().n_active_cells());
-  for(const auto& cell : dof_handler.active_cell_iterators() | IteratorFilters::LocallyOwnedCell())
+  for (const auto &cell : dof_handler.active_cell_iterators() |
+                            IteratorFilters::LocallyOwnedCell())
     fe_degrees[cell->global_active_cell_index()] = cell->get_fe().degree;
 
   DataOut<dim, spacedim> data_out;
@@ -373,7 +403,7 @@ Problem<dim, spacedim>::write_vtk(const DoFHandler<dim, spacedim>& dof_handler, 
 
 
 
-template<int dim, int spacedim>
+template <int dim, int spacedim>
 void
 Problem<dim, spacedim>::run()
 {
@@ -387,7 +417,8 @@ Problem<dim, spacedim>::run()
 
 
 
-int main()
+int
+main()
 {
   Problem<2> problem_2d;
   problem_2d.run();
