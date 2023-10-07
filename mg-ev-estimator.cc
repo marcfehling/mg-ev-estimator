@@ -21,14 +21,12 @@
 #include <deal.II/dofs/dof_handler.h>
 
 #include <deal.II/fe/fe_q.h>
-#include <deal.II/fe/mapping_q1.h>
 
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/tria.h>
 #include <deal.II/grid/filtered_iterator.h>
 
 #include <deal.II/hp/fe_collection.h>
-#include <deal.II/hp/mapping_collection.h>
 #include <deal.II/hp/q_collection.h>
 
 #include <deal.II/lac/affine_constraints.h>
@@ -50,6 +48,22 @@
 using namespace dealii;
 
 
+namespace
+{
+  template<int dim, int spacedim>
+  unsigned int
+  get_max_active_fe_degree(const DoFHandler<dim, spacedim> &dof_handler)
+  {
+    unsigned int max = 0;
+
+    for (auto &cell : dof_handler.active_cell_iterators() | IteratorFilters::LocallyOwnedCell())
+      max = std::max(max, cell->get_fe().degree);
+
+    return Utilities::MPI::max(max, MPI_COMM_WORLD);
+  };
+}
+
+
 
 template <int dim, int spacedim = dim>
 class Problem
@@ -61,18 +75,18 @@ public:
 
 private:
   void setup_scenario();
-  void output_scenario();
+
+  void setup_mg_matrices();
+  void estimate_eigenvalues();
+
+  void output_eigenvalues_and_vtk();
+  void write_vtk(const DoFHandler<dim, spacedim>&, const std::string &);
 
   Triangulation<dim, spacedim> triangulation;
   DoFHandler<dim, spacedim>    dof_handler;
 
-  hp::MappingCollection<dim, spacedim> mapping_collection;
   hp::FECollection<dim, spacedim>      fe_collection;
   hp::QCollection<dim>                 quadrature_collection;
-
-  void setup_mg_matrices();
-  void estimate_eigenvalues();
-  void output_eigenvalues();
 
   using VectorType                 = Vector<double>;
   using LevelMatrixType            = SparseMatrix<double>;
@@ -129,7 +143,6 @@ Problem<dim, spacedim>::setup_scenario()
   triangulation.refine_global(2);
 
   // set up collections
-  mapping_collection.push_back(MappingQ1<dim, spacedim>());
   for (unsigned int degree = 1; degree <= 3; ++degree)
     {
       fe_collection.push_back(FE_Q<dim, spacedim>(degree));
@@ -164,26 +177,6 @@ Problem<dim, spacedim>::setup_scenario()
 
 template<int dim, int spacedim>
 void
-Problem<dim, spacedim>::output_scenario()
-{
-  Vector<float> fe_degrees(triangulation.n_active_cells());
-  for(const auto& cell : dof_handler.active_cell_iterators() | IteratorFilters::LocallyOwnedCell())
-    fe_degrees[cell->global_active_cell_index()] = cell->get_fe().degree;
-
-  DataOut<dim, spacedim> data_out;
-
-  data_out.attach_dof_handler(dof_handler);
-  data_out.add_data_vector(fe_degrees, "fe_degrees");
-  data_out.build_patches(mapping_collection);
-
-  std::ofstream output("scenario_" + Utilities::int_to_string(spacedim) + "d.vtk");
-  data_out.write_vtk(output);
-}
-
-
-
-template<int dim, int spacedim>
-void
 Problem<dim, spacedim>::setup_mg_matrices()
 {
   const auto p_sequence = MGTransferGlobalCoarseningTools::PolynomialCoarseningSequenceType::decrease_by_one;
@@ -193,15 +186,6 @@ Problem<dim, spacedim>::setup_mg_matrices()
     fe_index_for_degree[dof_handler.get_fe(i).degree] = i;
 
   mg_triangulations = MGTransferGlobalCoarseningTools::create_geometric_coarsening_sequence(triangulation);
-
-  const auto get_max_active_fe_degree = [&](const auto &dof_handler) {
-    unsigned int max = 0;
-
-    for (auto &cell : dof_handler.active_cell_iterators() | IteratorFilters::LocallyOwnedCell())
-      max = std::max(max, cell->get_fe().degree);
-
-    return Utilities::MPI::max(max, MPI_COMM_WORLD);
-  };
 
   const unsigned int n_h_levels = mg_triangulations.size() - 1;
   const unsigned int n_p_levels =
@@ -274,7 +258,7 @@ Problem<dim, spacedim>::setup_mg_matrices()
       constraints.clear();
       DoFTools::make_hanging_node_constraints(dof_handler, constraints);
       VectorTools::interpolate_boundary_values(
-        mapping_collection, dof_handler, 0, Functions::ZeroFunction<dim>(), constraints);
+        dof_handler, 0, Functions::ZeroFunction<dim>(), constraints);
       constraints.close();
 
       // ... matrices
@@ -286,8 +270,7 @@ Problem<dim, spacedim>::setup_mg_matrices()
       sparsity_pattern.copy_from(dsp);
 
       matrix.reinit(sparsity_pattern);
-      MatrixCreator::create_laplace_matrix(mapping_collection,
-                                           dof_handler,
+      MatrixCreator::create_laplace_matrix(dof_handler,
                                            quadrature_collection,
                                            matrix,
                                            (const Function<spacedim, typename LevelMatrixType::value_type> *const)nullptr,
@@ -347,7 +330,7 @@ Problem<dim, spacedim>::estimate_eigenvalues()
 
 template<int dim, int spacedim>
 void
-Problem<dim, spacedim>::output_eigenvalues()
+Problem<dim, spacedim>::output_eigenvalues_and_vtk()
 {
   const unsigned int min_level = mg_matrices.min_level();
   const unsigned int max_level = mg_matrices.max_level();
@@ -355,9 +338,13 @@ Problem<dim, spacedim>::output_eigenvalues()
   ConvergenceTable table;
   for (unsigned int level = min_level; level <= max_level; ++level)
     {
-      table.add_value("level", level);
+      table.add_value("mg", level);
+      table.add_value("n_levels", mg_dof_handlers[level].get_triangulation().n_levels());
+      table.add_value("max_degree", get_max_active_fe_degree(mg_dof_handlers[level]));
       table.add_value("min_eigenvalue", min_eigenvalues[level]);
       table.add_value("max_eigenvalue", max_eigenvalues[level]);
+
+      write_vtk(mg_dof_handlers[level], "mg_" + Utilities::int_to_string(dim) + "d_level-" + Utilities::int_to_string(level) + ".vtk");
     }
 
   std::cout << dim << "d:" << std::endl;
@@ -368,14 +355,34 @@ Problem<dim, spacedim>::output_eigenvalues()
 
 template<int dim, int spacedim>
 void
+Problem<dim, spacedim>::write_vtk(const DoFHandler<dim, spacedim>& dof_handler, const std::string &filename)
+{
+  Vector<float> fe_degrees(dof_handler.get_triangulation().n_active_cells());
+  for(const auto& cell : dof_handler.active_cell_iterators() | IteratorFilters::LocallyOwnedCell())
+    fe_degrees[cell->global_active_cell_index()] = cell->get_fe().degree;
+
+  DataOut<dim, spacedim> data_out;
+
+  data_out.attach_dof_handler(dof_handler);
+  data_out.add_data_vector(fe_degrees, "fe_degrees");
+  data_out.build_patches();
+
+  std::ofstream output(filename);
+  data_out.write_vtk(output);
+}
+
+
+
+template<int dim, int spacedim>
+void
 Problem<dim, spacedim>::run()
 {
   setup_scenario();
-  output_scenario();
 
   setup_mg_matrices();
   estimate_eigenvalues();
-  output_eigenvalues();
+
+  output_eigenvalues_and_vtk();
 }
 
 
