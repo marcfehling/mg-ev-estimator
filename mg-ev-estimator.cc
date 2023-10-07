@@ -13,26 +13,39 @@
 //
 // ---------------------------------------------------------------------
 
+#include <deal.II/base/convergence_table.h>
 #include <deal.II/base/geometric_utilities.h>
 #include <deal.II/base/mg_level_object.h>
 #include <deal.II/base/signaling_nan.h>
+#include <deal.II/base/quadrature_lib.h>
 
 #include <deal.II/dofs/dof_handler.h>
 
-#include <deal.II/numerics/data_out.h>
-
 #include <deal.II/fe/fe_q.h>
-
-#include <deal.II/hp/fe_collection.h>
+#include <deal.II/fe/mapping_q1.h>
 
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/tria.h>
 #include <deal.II/grid/filtered_iterator.h>
 
-#include <deal.II/lac/diagonal_matrix.h>
+#include <deal.II/hp/fe_collection.h>
+#include <deal.II/hp/mapping_collection.h>
+#include <deal.II/hp/q_collection.h>
+
+#include <deal.II/lac/affine_constraints.h>
+// #include <deal.II/lac/diagonal_matrix.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/vector.h>
+
+// #include <deal.II/matrix_free/operators.h>
+
+#include <deal.II/multigrid/mg_transfer_global_coarsening.h>
+
+#include <deal.II/numerics/data_out.h>
+#include <deal.II/numerics/matrix_creator.h>
+#include <deal.II/numerics/matrix_creator.templates.h>
+#include <deal.II/numerics/vector_tools.h>
 
 #include <fstream>
 
@@ -73,21 +86,26 @@ private:
   void output_scenario();
 
   Triangulation<dim, spacedim> triangulation;
+  DoFHandler<dim, spacedim>    dof_handler;
 
-  hp::FECollection<dim>     fe_collection;
-  DoFHandler<dim, spacedim> dof_handler;
+  hp::MappingCollection<dim, spacedim> mapping_collection;
+  hp::FECollection<dim, spacedim>      fe_collection;
+  hp::QCollection<dim>                 quadrature_collection;
 
-
-  void setup_multigrid_matrices();
+  void setup_mg_matrices();
   void estimate_eigenvalues();
-  void output_eigenvalues();
 
   using VectorType                 = Vector<double>;
   using LevelMatrixType            = SparseMatrix<double>;
   using SmootherPreconditionerType = PreconditionJacobi<LevelMatrixType>;
-  // MatrixFree: using SmootherPreconditionerType = DiagonalMatrix<VectorType>;
+  // MatrixFree:
+  // using LevelMatrixType = MatrixFreeOperators::LaplaceOperator<...>;
+  // using SmootherPreconditionerType = DiagonalMatrix<VectorType>;
 
-  MGLevelObject<std::unique_ptr<LevelMatrixType>> mg_matrices;
+  std::vector<std::shared_ptr<const Triangulation<dim, spacedim>>> mg_triangulations;
+  MGLevelObject<DoFHandler<dim, spacedim>>                         mg_dof_handlers;
+  MGLevelObject<SparsityPattern>                                   mg_sparsity_patterns;
+  MGLevelObject<LevelMatrixType>                                   mg_matrices;
 };
 
 
@@ -103,36 +121,38 @@ template<int dim, int spacedim>
 void
 Problem<dim, spacedim>::setup_scenario()
 {
-  {
-    // set up L-shaped grid
-    std::vector<unsigned int> repetitions(dim);
-    Point<dim>                bottom_left, top_right;
-    for (unsigned int d = 0; d < dim; ++d)
-      if (d < 2)
-        {
-          repetitions[d] = 2;
-          bottom_left[d] = -1.;
-          top_right[d]   = 1.;
-        }
-      else
-        {
-          repetitions[d] = 1;
-          bottom_left[d] = 0.;
-          top_right[d]   = 1.;
-        }
+  // set up L-shaped grid
+  std::vector<unsigned int> repetitions(dim);
+  Point<dim>                bottom_left, top_right;
+  for (unsigned int d = 0; d < dim; ++d)
+    if (d < 2)
+      {
+        repetitions[d] = 2;
+        bottom_left[d] = -1.;
+        top_right[d]   = 1.;
+      }
+    else
+      {
+        repetitions[d] = 1;
+        bottom_left[d] = 0.;
+        top_right[d]   = 1.;
+      }
 
-    std::vector<int> cells_to_remove(dim, 1);
-    cells_to_remove[0] = -1;
+  std::vector<int> cells_to_remove(dim, 1);
+  cells_to_remove[0] = -1;
 
-    GridGenerator::subdivided_hyper_L(
-      triangulation, repetitions, bottom_left, top_right, cells_to_remove);
+  GridGenerator::subdivided_hyper_L(
+    triangulation, repetitions, bottom_left, top_right, cells_to_remove);
 
-    triangulation.refine_global(2);
-  }
+  triangulation.refine_global(2);
 
-  // set up fe collection
+  // set up collections
+  mapping_collection.push_back(MappingQ1<dim, spacedim>());
   for (unsigned int degree = 1; degree <= 3; ++degree)
-    fe_collection.push_back(FE_Q<dim>(degree));
+    {
+      fe_collection.push_back(FE_Q<dim, spacedim>(degree));
+      quadrature_collection.push_back(QGauss<dim>(degree + 1));
+    }
 
   // hp-refine center part
   Assert(dim > 1, ExcMessage("Setup works only for dim > 1."));
@@ -172,7 +192,7 @@ Problem<dim, spacedim>::output_scenario()
 
   data_out.attach_dof_handler(dof_handler);
   data_out.add_data_vector(fe_degrees, "fe_degrees");
-  data_out.build_patches();
+  data_out.build_patches(mapping_collection);
 
   std::ofstream output("scenario_" + Utilities::int_to_string(spacedim) + "d.vtk");
   data_out.write_vtk(output);
@@ -182,12 +202,118 @@ Problem<dim, spacedim>::output_scenario()
 
 template<int dim, int spacedim>
 void
-Problem<dim, spacedim>::setup_multigrid_matrices()
+Problem<dim, spacedim>::setup_mg_matrices()
 {
-  Assert(false, ExcNotImplemented());
+  const auto p_sequence = MGTransferGlobalCoarseningTools::PolynomialCoarseningSequenceType::decrease_by_one;
 
-  // setup hierarchy of "cheap" poisson matrices
-  // with corresponding constraint objects including Dirichlet boundary values
+  std::map<unsigned int, unsigned int> fe_index_for_degree;
+  for (unsigned int i = 0; i < fe_collection.size(); ++i)
+    fe_index_for_degree[dof_handler.get_fe(i).degree] = i;
+
+  mg_triangulations = MGTransferGlobalCoarseningTools::create_geometric_coarsening_sequence(triangulation);
+
+  const auto get_max_active_fe_degree = [&](const auto &dof_handler) {
+    unsigned int max = 0;
+
+    for (auto &cell : dof_handler.active_cell_iterators() | IteratorFilters::LocallyOwnedCell())
+      max = std::max(max, cell->get_fe().degree);
+
+    return Utilities::MPI::max(max, MPI_COMM_WORLD);
+  };
+
+  const unsigned int n_h_levels = mg_triangulations.size() - 1;
+  const unsigned int n_p_levels =
+    MGTransferGlobalCoarseningTools::create_polynomial_coarsening_sequence(
+      get_max_active_fe_degree(dof_handler), p_sequence).size();
+
+  const unsigned int minlevel = 0;
+  const unsigned int maxlevel = n_h_levels + n_p_levels - 1;
+
+  mg_dof_handlers.resize(minlevel, maxlevel);
+  mg_sparsity_patterns.resize(minlevel, maxlevel);
+  mg_matrices.resize(minlevel, maxlevel);
+
+  // Loop from max to min level and set up DoFHandler with coarser mesh...
+  for (unsigned int l = 0; l < n_h_levels; ++l)
+    {
+      mg_dof_handlers[l].reinit(*mg_triangulations[l]);
+      mg_dof_handlers[l].distribute_dofs(fe_collection);
+    }
+
+  // ... with lower polynomial degrees
+  for (unsigned int i = 0, l = maxlevel; i < n_p_levels; ++i, --l)
+    {
+      mg_dof_handlers[l].reinit(triangulation);
+
+      if (l == maxlevel) // finest level
+        {
+          auto cell_other = dof_handler.begin_active();
+          for (const auto &cell : mg_dof_handlers[l].active_cell_iterators())
+            {
+              if (cell->is_locally_owned())
+                cell->set_active_fe_index(cell_other->active_fe_index());
+              cell_other++;
+            }
+        }
+      else // coarse level
+        {
+          auto &dof_handler_fine   = mg_dof_handlers[l + 1];
+          auto &dof_handler_coarse = mg_dof_handlers[l + 0];
+
+          auto cell_other = dof_handler_fine.begin_active();
+          for (const auto &cell : dof_handler_coarse.active_cell_iterators())
+            {
+              if (cell->is_locally_owned())
+                {
+                  const unsigned int next_degree =
+                    MGTransferGlobalCoarseningTools::create_next_polynomial_coarsening_degree(
+                      cell_other->get_fe().degree, p_sequence);
+
+                  cell->set_active_fe_index(fe_index_for_degree[next_degree]);
+                }
+              cell_other++;
+            }
+        }
+
+      mg_dof_handlers[l].distribute_dofs(fe_collection);
+    }
+
+  MGLevelObject<AffineConstraints<typename LevelMatrixType::value_type>> mg_constraints(minlevel, maxlevel);
+  for (unsigned int level = minlevel; level <= maxlevel; level++)
+    {
+      const auto &dof_handler      = mg_dof_handlers[level];
+      auto       &constraints      = mg_constraints[level];
+      auto       &sparsity_pattern = mg_sparsity_patterns[level];
+      auto       &matrix           = mg_matrices[level];
+
+      // Note: the following part needs to be adjusted for parallel applications
+
+      // ... constraints (with homogenous Dirichlet BC)
+      constraints.clear();
+      DoFTools::make_hanging_node_constraints(dof_handler, constraints);
+      VectorTools::interpolate_boundary_values(
+        mapping_collection, dof_handler, 0, Functions::ZeroFunction<dim>(), constraints);
+      constraints.close();
+
+      // ... matrices
+      DynamicSparsityPattern dsp(dof_handler.n_dofs());
+      DoFTools::make_sparsity_pattern(dof_handler,
+                                      dsp,
+                                      constraints,
+                                      /*keep_constrained_dofs = */ true);
+      sparsity_pattern.copy_from(dsp);
+
+      matrix.reinit(sparsity_pattern);
+      MatrixCreator::create_laplace_matrix(mapping_collection,
+                                           dof_handler,
+                                           quadrature_collection,
+                                           matrix,
+                                           (const Function<spacedim, typename LevelMatrixType::value_type> *const)nullptr,
+                                           constraints);
+
+      // MatrixFree: ... operators
+      // [...]
+    }
 }
 
 
@@ -208,7 +334,7 @@ Problem<dim, spacedim>::estimate_eigenvalues()
       smoother_data[level].preconditioner = std::make_shared<SmootherPreconditionerType>();
 
       // MatrixFree: mg_matrices[level]->compute_inverse_diagonal(smoother_data[level].preconditioner->get_vector());
-      smoother_data[level].preconditioner->initialize(*mg_matrices[level]);
+      smoother_data[level].preconditioner->initialize(mg_matrices[level]);
 
       smoother_data[level].smoothing_range     = 20.;
       smoother_data[level].degree              = 5;
@@ -218,30 +344,33 @@ Problem<dim, spacedim>::estimate_eigenvalues()
   // Estimate eigenvalues on all levels, i.e., all operators.
   std::vector<double> min_eigenvalues(max_level + 1, numbers::signaling_nan<double>());
   std::vector<double> max_eigenvalues(max_level + 1, numbers::signaling_nan<double>());
-  for (unsigned int level = min_level + 1; level <= max_level; level++)
+  for (unsigned int level = min_level; level <= max_level; level++)
     {
       SmootherType chebyshev;
-      chebyshev.initialize(*mg_matrices[level], smoother_data[level]);
+      chebyshev.initialize(mg_matrices[level], smoother_data[level]);
 
       VectorType vec;
 
       // MatrixFree: mg_matrices[level]->initialize_dof_vector(vec);
-      vec.reinit(dof_handler.n_dofs());
+      vec.reinit(mg_dof_handlers[level].n_dofs());
 
       const auto evs = chebyshev.estimate_eigenvalues(vec);
 
       min_eigenvalues[level] = evs.min_eigenvalue_estimate;
       max_eigenvalues[level] = evs.max_eigenvalue_estimate;
     }
-}
 
-
-
-template<int dim, int spacedim>
-void
-Problem<dim, spacedim>::output_eigenvalues()
-{
-  Assert(false, ExcNotImplemented());
+  // Output eigenvalues
+  // dump to Table and then file system
+  ConvergenceTable table;
+  for (unsigned int level = min_level; level <= max_level; ++level)
+    {
+      table.add_value("level", level);
+      table.add_value("min_eigenvalue", min_eigenvalues[level]);
+      table.add_value("max_eigenvalue", max_eigenvalues[level]);
+    }
+  std::cout << dim << "d:" << std::endl;
+  table.write_text(std::cout);
 }
 
 
@@ -253,9 +382,8 @@ Problem<dim, spacedim>::run()
   setup_scenario();
   output_scenario();
 
-  setup_multigrid_matrices();
+  setup_mg_matrices();
   estimate_eigenvalues();
-  output_eigenvalues();
 }
 
 
