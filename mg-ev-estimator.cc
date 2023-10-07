@@ -14,7 +14,6 @@
 // ---------------------------------------------------------------------
 
 #include <deal.II/base/convergence_table.h>
-#include <deal.II/base/geometric_utilities.h>
 #include <deal.II/base/mg_level_object.h>
 #include <deal.II/base/signaling_nan.h>
 #include <deal.II/base/quadrature_lib.h>
@@ -44,32 +43,11 @@
 
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/matrix_creator.h>
-#include <deal.II/numerics/matrix_creator.templates.h>
 #include <deal.II/numerics/vector_tools.h>
 
 #include <fstream>
 
 using namespace dealii;
-
-
-template <int dim>
-class Solution : public Function<dim>
-{
-public:
-  Solution()
-    : Function<dim>()
-  {
-    Assert(dim > 1, ExcNotImplemented());
-  }
-
-  virtual double value(const Point<dim> &p, const unsigned int /*component*/) const override
-  {
-    const std::array<double, 2> polar = GeometricUtilities::Coordinates::to_spherical(Point<2>(p[0], p[1]));
-
-    constexpr double alpha = 2./3.;
-    return std::pow(polar[0], alpha) * std::sin(alpha * polar[1]);
-  }
-};
 
 
 
@@ -94,6 +72,7 @@ private:
 
   void setup_mg_matrices();
   void estimate_eigenvalues();
+  void output_eigenvalues();
 
   using VectorType                 = Vector<double>;
   using LevelMatrixType            = SparseMatrix<double>;
@@ -106,6 +85,9 @@ private:
   MGLevelObject<DoFHandler<dim, spacedim>>                         mg_dof_handlers;
   MGLevelObject<SparsityPattern>                                   mg_sparsity_patterns;
   MGLevelObject<LevelMatrixType>                                   mg_matrices;
+
+  std::vector<double> min_eigenvalues;
+  std::vector<double> max_eigenvalues;
 };
 
 
@@ -342,8 +324,8 @@ Problem<dim, spacedim>::estimate_eigenvalues()
     }
 
   // Estimate eigenvalues on all levels, i.e., all operators.
-  std::vector<double> min_eigenvalues(max_level + 1, numbers::signaling_nan<double>());
-  std::vector<double> max_eigenvalues(max_level + 1, numbers::signaling_nan<double>());
+  min_eigenvalues.resize(max_level + 1, numbers::signaling_nan<double>());
+  max_eigenvalues.resize(max_level + 1, numbers::signaling_nan<double>());
   for (unsigned int level = min_level; level <= max_level; level++)
     {
       SmootherType chebyshev;
@@ -359,9 +341,17 @@ Problem<dim, spacedim>::estimate_eigenvalues()
       min_eigenvalues[level] = evs.min_eigenvalue_estimate;
       max_eigenvalues[level] = evs.max_eigenvalue_estimate;
     }
+}
 
-  // Output eigenvalues
-  // dump to Table and then file system
+
+
+template<int dim, int spacedim>
+void
+Problem<dim, spacedim>::output_eigenvalues()
+{
+  const unsigned int min_level = mg_matrices.min_level();
+  const unsigned int max_level = mg_matrices.max_level();
+
   ConvergenceTable table;
   for (unsigned int level = min_level; level <= max_level; ++level)
     {
@@ -369,6 +359,7 @@ Problem<dim, spacedim>::estimate_eigenvalues()
       table.add_value("min_eigenvalue", min_eigenvalues[level]);
       table.add_value("max_eigenvalue", max_eigenvalues[level]);
     }
+
   std::cout << dim << "d:" << std::endl;
   table.write_text(std::cout);
 }
@@ -384,6 +375,7 @@ Problem<dim, spacedim>::run()
 
   setup_mg_matrices();
   estimate_eigenvalues();
+  output_eigenvalues();
 }
 
 
