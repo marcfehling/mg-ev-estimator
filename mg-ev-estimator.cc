@@ -62,6 +62,28 @@ namespace
 
     return Utilities::MPI::max(max, MPI_COMM_WORLD);
   };
+
+
+
+  template <int dim, int spacedim>
+  void
+  write_vtk(const DoFHandler<dim, spacedim> &dof_handler,
+            const std::string               &filename)
+  {
+    Vector<float> fe_degrees(dof_handler.get_triangulation().n_active_cells());
+    for (const auto &cell : dof_handler.active_cell_iterators() |
+                              IteratorFilters::LocallyOwnedCell())
+      fe_degrees[cell->global_active_cell_index()] = cell->get_fe().degree;
+
+    DataOut<dim, spacedim> data_out;
+
+    data_out.attach_dof_handler(dof_handler);
+    data_out.add_data_vector(fe_degrees, "fe_degrees");
+    data_out.build_patches();
+
+    std::ofstream output(filename);
+    data_out.write_vtk(output);
+  };
 } // namespace
 
 
@@ -86,8 +108,6 @@ private:
 
   void
   output_eigenvalues_and_vtk();
-  void
-  write_vtk(const DoFHandler<dim, spacedim> &, const std::string &);
 
   Triangulation<dim, spacedim> triangulation;
   DoFHandler<dim, spacedim>    dof_handler;
@@ -377,28 +397,6 @@ Problem<dim, spacedim>::output_eigenvalues_and_vtk()
 
   std::cout << dim << "d:" << std::endl;
   table.write_text(std::cout);
-}
-
-
-
-template <int dim, int spacedim>
-void
-Problem<dim, spacedim>::write_vtk(const DoFHandler<dim, spacedim> &dof_handler,
-                                  const std::string               &filename)
-{
-  Vector<float> fe_degrees(dof_handler.get_triangulation().n_active_cells());
-  for (const auto &cell : dof_handler.active_cell_iterators() |
-                            IteratorFilters::LocallyOwnedCell())
-    fe_degrees[cell->global_active_cell_index()] = cell->get_fe().degree;
-
-  DataOut<dim, spacedim> data_out;
-
-  data_out.attach_dof_handler(dof_handler);
-  data_out.add_data_vector(fe_degrees, "fe_degrees");
-  data_out.build_patches();
-
-  std::ofstream output(filename);
-  data_out.write_vtk(output);
 }
 
 
