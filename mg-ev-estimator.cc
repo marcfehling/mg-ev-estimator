@@ -145,15 +145,15 @@ template <int dim, int spacedim>
 void
 Problem<dim, spacedim>::setup_scenario()
 {
-  // set up L-shaped grid
+  // set up two cell grid
   std::vector<unsigned int> repetitions(dim);
   Point<dim>                bottom_left, top_right;
   for (unsigned int d = 0; d < dim; ++d)
-    if (d < 2)
+    if (d < 1)
       {
         repetitions[d] = 2;
-        bottom_left[d] = -1.;
-        top_right[d]   = 1.;
+        bottom_left[d] = 0.;
+        top_right[d]   = 2.;
       }
     else
       {
@@ -162,13 +162,8 @@ Problem<dim, spacedim>::setup_scenario()
         top_right[d]   = 1.;
       }
 
-  std::vector<int> cells_to_remove(dim, 1);
-  cells_to_remove[0] = -1;
-
-  GridGenerator::subdivided_hyper_L(
-    triangulation, repetitions, bottom_left, top_right, cells_to_remove);
-
-  triangulation.refine_global(2);
+  GridGenerator::subdivided_hyper_rectangle(
+    triangulation, repetitions, bottom_left, top_right);
 
   // set up collections
   for (unsigned int degree = 1; degree <= 3; ++degree)
@@ -177,8 +172,7 @@ Problem<dim, spacedim>::setup_scenario()
       quadrature_collection.push_back(QGauss<dim>(degree + 1));
     }
 
-  // hp-refine center part
-  Assert(dim > 1, ExcMessage("Setup works only for dim > 1."));
+  // hp-refine
   Assert(fe_collection.size() > 2, ExcMessage("We need at least two FEs."));
   for (const auto &cell : dof_handler.active_cell_iterators() |
                             IteratorFilters::LocallyOwnedCell())
@@ -186,16 +180,12 @@ Problem<dim, spacedim>::setup_scenario()
       // set all cells to second to last FE
       cell->set_active_fe_index(fe_collection.size() - 2);
 
-      const auto &center = cell->center();
-      if (std::abs(center[0]) < 0.5 && std::abs(center[1]) < 0.5)
-        {
-          if (center[0] < -0.25 || center[1] > 0.25)
-            // outer layer gets p-refined
-            cell->set_active_fe_index(fe_collection.size() - 1);
-          else
-            // inner layer gets h-refined
-            cell->set_refine_flag();
-        }
+      if (std::abs(cell->center()[0]) < 1)
+        // left cell gets p-refined
+        cell->set_active_fe_index(fe_collection.size() - 1);
+      else
+        // right cell gets h-refined
+        cell->set_refine_flag();
     }
 
   triangulation.execute_coarsening_and_refinement();
@@ -292,10 +282,6 @@ Problem<dim, spacedim>::setup_mg_matrices()
       // ... constraints (with homogenous Dirichlet BC)
       constraints.clear();
       DoFTools::make_hanging_node_constraints(dof_handler, constraints);
-      VectorTools::interpolate_boundary_values(dof_handler,
-                                               0,
-                                               Functions::ZeroFunction<dim>(),
-                                               constraints);
       constraints.close();
 
       // ... matrices
@@ -390,6 +376,9 @@ Problem<dim, spacedim>::output_eigenvalues_and_vtk()
       table.add_value("n_dofs", mg_dof_handlers[level].n_dofs());
       table.add_value("min_eigenvalue", min_eigenvalues[level]);
       table.add_value("max_eigenvalue", max_eigenvalues[level]);
+
+      std::ofstream output("matrix_" + Utilities::int_to_string(dim) + "d_level-" + Utilities::int_to_string(level) + ".csv");
+      mg_matrices[level].print_formatted(output, 3, true, 0, " ", 1., ",");
 
       write_vtk(mg_dof_handlers[level],
                 "mg_" + Utilities::int_to_string(dim) + "d_level-" +

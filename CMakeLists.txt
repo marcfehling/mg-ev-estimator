@@ -18,6 +18,6 @@ if(NOT ${deal.II_FOUND})
 endif()
 
 deal_ii_initialize_cached_variables()
-set(CLEAN_UP_FILES *.log *.gmv *.gnuplot *.gpl *.eps *.pov *.vtk *.ucd *.d2 *.vtu *.pvtu)
+set(CLEAN_UP_FILES *.log *.gmv *.gnuplot *.gpl *.eps *.pov *.vtk *.ucd *.d2 *.vtu *.pvtu matrix*.csv)
 project(${TARGET})
 deal_ii_invoke_autopilot()
