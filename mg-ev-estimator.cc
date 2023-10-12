@@ -383,10 +383,11 @@ Problem<dim, spacedim>::output_eigenvalues_and_vtk()
   for (unsigned int level = min_level; level <= max_level; ++level)
     {
       table.add_value("mg", level);
-      table.add_value("n_levels",
+      table.add_value("tria_levels",
                       mg_dof_handlers[level].get_triangulation().n_levels());
       table.add_value("max_degree",
                       get_max_active_fe_degree(mg_dof_handlers[level]));
+      table.add_value("n_dofs", mg_dof_handlers[level].n_dofs());
       table.add_value("min_eigenvalue", min_eigenvalues[level]);
       table.add_value("max_eigenvalue", max_eigenvalues[level]);
 
@@ -395,7 +396,7 @@ Problem<dim, spacedim>::output_eigenvalues_and_vtk()
                   Utilities::int_to_string(level) + ".vtk");
     }
 
-  std::cout << dim << "d:" << std::endl;
+  std::cout << dim << "d: " << std::endl;
   table.write_text(std::cout);
 }
 
