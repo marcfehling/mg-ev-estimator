@@ -21,6 +21,7 @@
 #include <deal.II/dofs/dof_handler.h>
 
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_q_iso_q1.h>
 
 #include <deal.II/grid/filtered_iterator.h>
 #include <deal.II/grid/grid_generator.h>
@@ -168,8 +169,8 @@ Problem<dim, spacedim>::setup_scenario()
   // set up collections
   for (unsigned int degree = 1; degree <= 3; ++degree)
     {
-      fe_collection.push_back(FE_Q<dim, spacedim>(degree));
-      quadrature_collection.push_back(QGauss<dim>(degree + 1));
+      fe_collection.push_back(FE_Q_iso_Q1<dim, spacedim>(degree));
+      quadrature_collection.push_back(QIterated<dim>(QGauss<1>(2), degree));
     }
 
   // hp-refine
