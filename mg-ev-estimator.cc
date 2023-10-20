@@ -21,6 +21,7 @@
 #include <deal.II/dofs/dof_handler.h>
 
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_q_iso_q1.h>
 
 #include <deal.II/grid/filtered_iterator.h>
 #include <deal.II/grid/grid_generator.h>
@@ -33,6 +34,7 @@
 // #include <deal.II/lac/diagonal_matrix.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/sparse_matrix.h>
+#include <deal.II/lac/sparse_matrix_tools.h>
 #include <deal.II/lac/vector.h>
 
 // #include <deal.II/matrix_free/operators.h>
@@ -88,6 +90,123 @@ namespace
 
 
 
+/**
+ * Adopted from https://github.com/peterrum/dealii-asm/blob/d998b9b344a19c9d2890e087f953c2f93e6546ae/include/preconditioners.h#L145.
+ */
+template<typename Number, int dim, int spacedim>
+class PreconditionASM
+{
+  private:
+  enum class WeightingType
+  {
+    none,
+    left,
+    right,
+    symm
+  };
+
+  public:
+    PreconditionASM(const DoFHandler<dim, spacedim> &dof_handler)
+    : dof_handler(dof_handler)
+    , weighting_type(WeightingType::symm)
+    {
+    }
+
+    template <typename GlobalSparseMatrixType, typename GlobalSparsityPattern>
+    void
+    initialize(const GlobalSparseMatrixType &global_sparse_matrix,
+               const GlobalSparsityPattern & global_sparsity_pattern)
+    {
+      SparseMatrixTools::restrict_to_cells(global_sparse_matrix,
+                                           global_sparsity_pattern,
+                                           dof_handler,
+                                           blocks);
+
+      for (auto &block : blocks)
+        if (block.m() > 0 && block.n() > 0)
+          block.gauss_jordan();
+    }
+
+    template<typename VectorType>
+    void
+    vmult(VectorType & dst, const VectorType & src) const
+    {
+    dst = 0.0;
+    src.update_ghost_values();
+
+    Vector<double> vector_src, vector_dst, vector_weights;
+
+    VectorType weights;
+
+    if (weighting_type != WeightingType::none)
+      {
+        weights.reinit(src);
+
+        for (const auto &cell : dof_handler.active_cell_iterators())
+          {
+            if (cell->is_locally_owned() == false)
+              continue;
+
+            const unsigned int dofs_per_cell = cell->get_fe().n_dofs_per_cell();
+            vector_weights.reinit(dofs_per_cell);
+
+            for (unsigned int i = 0; i < dofs_per_cell; ++i)
+              vector_weights[i] = 1.0;
+
+            cell->distribute_local_to_global(vector_weights, weights);
+          }
+
+        weights.compress(VectorOperation::add);
+        for (auto &i : weights)
+          i = (weighting_type == WeightingType::symm) ? std::sqrt(1.0 / i) :
+                                                        (1.0 / i);
+        weights.update_ghost_values();
+      }
+
+    for (const auto &cell : dof_handler.active_cell_iterators())
+      {
+        if (cell->is_locally_owned() == false)
+          continue;
+
+        const unsigned int dofs_per_cell = cell->get_fe().n_dofs_per_cell();
+
+        vector_src.reinit(dofs_per_cell);
+        vector_dst.reinit(dofs_per_cell);
+        if (weighting_type != WeightingType::none)
+          vector_weights.reinit(dofs_per_cell);
+
+        cell->get_dof_values(src, vector_src);
+        if (weighting_type != WeightingType::none)
+          cell->get_dof_values(weights, vector_weights);
+
+        if (weighting_type == WeightingType::symm ||
+            weighting_type == WeightingType::right)
+          for (unsigned int i = 0; i < dofs_per_cell; ++i)
+            vector_src[i] *= vector_weights[i];
+
+        blocks[cell->active_cell_index()].vmult(vector_dst, vector_src);
+
+        if (weighting_type == WeightingType::symm ||
+            weighting_type == WeightingType::left)
+          for (unsigned int i = 0; i < dofs_per_cell; ++i)
+            vector_dst[i] *= vector_weights[i];
+
+        cell->distribute_local_to_global(vector_dst, dst);
+      }
+
+    src.zero_out_ghost_values();
+    dst.compress(VectorOperation::add);
+    }
+
+  private:
+  const DoFHandler<dim, spacedim> &dof_handler;
+  std::vector<FullMatrix<Number>>  blocks;
+
+  const WeightingType weighting_type;
+};
+
+
+
 template <int dim, int spacedim = dim>
 class Problem
 {
@@ -117,7 +236,9 @@ private:
 
   using VectorType                 = Vector<double>;
   using LevelMatrixType            = SparseMatrix<double>;
-  using SmootherPreconditionerType = PreconditionJacobi<LevelMatrixType>;
+  //using SmootherPreconditionerType = PreconditionJacobi<LevelMatrixType>;
+  using SmootherPreconditionerType = PreconditionASM<double, dim, dim>;
+
   // MatrixFree:
   // using LevelMatrixType = MatrixFreeOperators::LaplaceOperator<...>;
   // using SmootherPreconditionerType = DiagonalMatrix<VectorType>;
@@ -145,15 +266,15 @@ template <int dim, int spacedim>
 void
 Problem<dim, spacedim>::setup_scenario()
 {
-  // set up L-shaped grid
+  // set up two cell grid
   std::vector<unsigned int> repetitions(dim);
   Point<dim>                bottom_left, top_right;
   for (unsigned int d = 0; d < dim; ++d)
-    if (d < 2)
+    if (d < 1)
       {
         repetitions[d] = 2;
-        bottom_left[d] = -1.;
-        top_right[d]   = 1.;
+        bottom_left[d] = 0.;
+        top_right[d]   = 2.;
       }
     else
       {
@@ -162,23 +283,25 @@ Problem<dim, spacedim>::setup_scenario()
         top_right[d]   = 1.;
       }
 
-  std::vector<int> cells_to_remove(dim, 1);
-  cells_to_remove[0] = -1;
-
-  GridGenerator::subdivided_hyper_L(
-    triangulation, repetitions, bottom_left, top_right, cells_to_remove);
-
-  triangulation.refine_global(2);
+  GridGenerator::subdivided_hyper_rectangle(
+    triangulation, repetitions, bottom_left, top_right);
 
   // set up collections
   for (unsigned int degree = 1; degree <= 3; ++degree)
     {
+      if(false)
+      {
       fe_collection.push_back(FE_Q<dim, spacedim>(degree));
       quadrature_collection.push_back(QGauss<dim>(degree + 1));
+      }
+      else
+      {
+      fe_collection.push_back(FE_Q_iso_Q1<dim, spacedim>(degree));
+      quadrature_collection.push_back(QIterated<dim>(QGauss<1>(2), degree));
+      }
     }
 
-  // hp-refine center part
-  Assert(dim > 1, ExcMessage("Setup works only for dim > 1."));
+  // hp-refine
   Assert(fe_collection.size() > 2, ExcMessage("We need at least two FEs."));
   for (const auto &cell : dof_handler.active_cell_iterators() |
                             IteratorFilters::LocallyOwnedCell())
@@ -186,16 +309,12 @@ Problem<dim, spacedim>::setup_scenario()
       // set all cells to second to last FE
       cell->set_active_fe_index(fe_collection.size() - 2);
 
-      const auto &center = cell->center();
-      if (std::abs(center[0]) < 0.5 && std::abs(center[1]) < 0.5)
-        {
-          if (center[0] < -0.25 || center[1] > 0.25)
-            // outer layer gets p-refined
-            cell->set_active_fe_index(fe_collection.size() - 1);
-          else
-            // inner layer gets h-refined
-            cell->set_refine_flag();
-        }
+      if (std::abs(cell->center()[0]) < 1)
+        // left cell gets p-refined
+        cell->set_active_fe_index(fe_collection.size() - 1);
+      else
+        // right cell gets h-refined
+        cell->set_refine_flag();
     }
 
   triangulation.execute_coarsening_and_refinement();
@@ -292,10 +411,6 @@ Problem<dim, spacedim>::setup_mg_matrices()
       // ... constraints (with homogenous Dirichlet BC)
       constraints.clear();
       DoFTools::make_hanging_node_constraints(dof_handler, constraints);
-      VectorTools::interpolate_boundary_values(dof_handler,
-                                               0,
-                                               Functions::ZeroFunction<dim>(),
-                                               constraints);
       constraints.close();
 
       // ... matrices
@@ -339,11 +454,11 @@ Problem<dim, spacedim>::estimate_eigenvalues()
   for (unsigned int level = min_level; level <= max_level; level++)
     {
       smoother_data[level].preconditioner =
-        std::make_shared<SmootherPreconditionerType>();
+        std::make_shared<SmootherPreconditionerType>(mg_dof_handlers[level]);
 
       // MatrixFree:
       // mg_matrices[level]->compute_inverse_diagonal(smoother_data[level].preconditioner->get_vector());
-      smoother_data[level].preconditioner->initialize(mg_matrices[level]);
+      smoother_data[level].preconditioner->initialize(mg_matrices[level], mg_sparsity_patterns[level]);
 
       smoother_data[level].smoothing_range     = 20.;
       smoother_data[level].degree              = 5;
@@ -390,6 +505,9 @@ Problem<dim, spacedim>::output_eigenvalues_and_vtk()
       table.add_value("n_dofs", mg_dof_handlers[level].n_dofs());
       table.add_value("min_eigenvalue", min_eigenvalues[level]);
       table.add_value("max_eigenvalue", max_eigenvalues[level]);
+
+      std::ofstream output("matrix_" + Utilities::int_to_string(dim) + "d_level-" + Utilities::int_to_string(level) + ".csv");
+      mg_matrices[level].print_formatted(output, 3, true, 0, " ", 1., ",");
 
       write_vtk(mg_dof_handlers[level],
                 "mg_" + Utilities::int_to_string(dim) + "d_level-" +
