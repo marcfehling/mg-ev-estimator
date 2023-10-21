@@ -600,6 +600,11 @@ template <int dim, int spacedim>
 void
 Problem<dim, spacedim>::output()
 {
+  const std::string description =
+    Utilities::int_to_string(dim) + "d_" + prm.scenario_type + "_" +
+    prm.fe_type + "_" + prm.smoother_preconditioner_type +
+    (prm.apply_homogeneous_dirichlet_bc ? "_BC" : "");
+
   const unsigned int min_level = mg_matrices.min_level();
   const unsigned int max_level = mg_matrices.max_level();
 
@@ -615,20 +620,20 @@ Problem<dim, spacedim>::output()
       table.add_value("min_eigenvalue", min_eigenvalues[level]);
       table.add_value("max_eigenvalue", max_eigenvalues[level]);
 
-      const std::string filename = "mg_" + Utilities::int_to_string(dim) +
-                                   "d_level-" + Utilities::int_to_string(level);
+      const std::string filestem =
+        description + "_level-" + Utilities::int_to_string(level);
 
       if (prm.write_level_matrices == true)
         {
-          std::ofstream output(filename + ".csv");
+          std::ofstream output(filestem + ".csv");
           mg_matrices[level].print_formatted(output, 3, true, 0, " ", 1., ",");
         }
 
       if (prm.write_vtk == true)
-        write_vtk(mg_dof_handlers[level], filename + ".vtk");
+        write_vtk(mg_dof_handlers[level], filestem + ".vtk");
     }
 
-  std::cout << dim << "d:" << std::endl;
+  std::cout << description << std::endl;
   table.write_text(std::cout);
 }
 
