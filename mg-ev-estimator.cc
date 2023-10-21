@@ -21,6 +21,7 @@
 #include <deal.II/dofs/dof_handler.h>
 
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_q_iso_q1.h>
 
 #include <deal.II/grid/filtered_iterator.h>
 #include <deal.II/grid/grid_generator.h>
@@ -30,12 +31,10 @@
 #include <deal.II/hp/q_collection.h>
 
 #include <deal.II/lac/affine_constraints.h>
-// #include <deal.II/lac/diagonal_matrix.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/sparse_matrix.h>
+#include <deal.II/lac/sparse_matrix_tools.h>
 #include <deal.II/lac/vector.h>
-
-// #include <deal.II/matrix_free/operators.h>
 
 #include <deal.II/multigrid/mg_transfer_global_coarsening.h>
 
@@ -46,6 +45,54 @@
 #include <fstream>
 
 using namespace dealii;
+
+
+struct Parameters
+{
+  /**
+   * Choose the type of finite element to be used.
+   *
+   * Choices: Qp | Qp-iso-Q1
+   */
+  const std::string fe_type = "Qp";
+
+  /**
+   * Creates a collection of finite elements with polynomial degrees
+   * 1,...,max_degree.
+   */
+  const unsigned int max_degree = 3;
+
+  /**
+   * Choose a predefined discretization.
+   *
+   * Choices: L-domain | two-coarse-cells
+   */
+  const std::string scenario_type = "L-domain";
+
+  /**
+   * Decide whether to apply homogeneous Dirichlet boundary conditions to the
+   * constraints on each level, and subsequently to each level matrix.
+   */
+  const bool apply_homogeneous_dirichlet_bc = true;
+
+  /**
+   * Specify which preconditioner to use for the smoother.
+   *
+   * Choices: Jacobi | SSOR | ASM
+   */
+  const std::string smoother_preconditioner_type = "Jacobi";
+
+  /**
+   * Write the discretization of each level into a separate vtk file.
+   */
+  const bool write_vtk = true;
+
+  /**
+   * Write each level matrix into a separate csv file.
+   */
+  const bool write_level_matrices = false;
+};
+
 
 
 namespace
@@ -88,6 +135,123 @@ namespace
 
 
 
+/**
+ * Adopted from
+ * https://github.com/peterrum/dealii-asm/blob/d998b9b344a19c9d2890e087f953c2f93e6546ae/include/preconditioners.h#L145.
+ */
+template <typename Number, int dim, int spacedim>
+class PreconditionASM
+{
+private:
+  enum class WeightingType
+  {
+    none,
+    left,
+    right,
+    symm
+  };
+
+public:
+  PreconditionASM(const DoFHandler<dim, spacedim> &dof_handler)
+    : dof_handler(dof_handler)
+    , weighting_type(WeightingType::symm)
+  {}
+
+  template <typename GlobalSparseMatrixType, typename GlobalSparsityPattern>
+  void
+  initialize(const GlobalSparseMatrixType &global_sparse_matrix,
+             const GlobalSparsityPattern  &global_sparsity_pattern)
+  {
+    SparseMatrixTools::restrict_to_cells(global_sparse_matrix,
+                                         global_sparsity_pattern,
+                                         dof_handler,
+                                         blocks);
+
+    for (auto &block : blocks)
+      if (block.m() > 0 && block.n() > 0)
+        block.gauss_jordan();
+  }
+
+  template <typename VectorType>
+  void
+  vmult(VectorType &dst, const VectorType &src) const
+  {
+    dst = 0.0;
+    src.update_ghost_values();
+
+    Vector<double> vector_src, vector_dst, vector_weights;
+
+    VectorType weights;
+
+    if (weighting_type != WeightingType::none)
+      {
+        weights.reinit(src);
+
+        for (const auto &cell : dof_handler.active_cell_iterators())
+          {
+            if (cell->is_locally_owned() == false)
+              continue;
+
+            const unsigned int dofs_per_cell = cell->get_fe().n_dofs_per_cell();
+            vector_weights.reinit(dofs_per_cell);
+
+            for (unsigned int i = 0; i < dofs_per_cell; ++i)
+              vector_weights[i] = 1.0;
+
+            cell->distribute_local_to_global(vector_weights, weights);
+          }
+
+        weights.compress(VectorOperation::add);
+        for (auto &i : weights)
+          i = (weighting_type == WeightingType::symm) ? std::sqrt(1.0 / i) :
+                                                        (1.0 / i);
+        weights.update_ghost_values();
+      }
+
+    for (const auto &cell : dof_handler.active_cell_iterators())
+      {
+        if (cell->is_locally_owned() == false)
+          continue;
+
+        const unsigned int dofs_per_cell = cell->get_fe().n_dofs_per_cell();
+
+        vector_src.reinit(dofs_per_cell);
+        vector_dst.reinit(dofs_per_cell);
+        if (weighting_type != WeightingType::none)
+          vector_weights.reinit(dofs_per_cell);
+
+        cell->get_dof_values(src, vector_src);
+        if (weighting_type != WeightingType::none)
+          cell->get_dof_values(weights, vector_weights);
+
+        if (weighting_type == WeightingType::symm ||
+            weighting_type == WeightingType::right)
+          for (unsigned int i = 0; i < dofs_per_cell; ++i)
+            vector_src[i] *= vector_weights[i];
+
+        blocks[cell->active_cell_index()].vmult(vector_dst, vector_src);
+
+        if (weighting_type == WeightingType::symm ||
+            weighting_type == WeightingType::left)
+          for (unsigned int i = 0; i < dofs_per_cell; ++i)
+            vector_dst[i] *= vector_weights[i];
+
+        cell->distribute_local_to_global(vector_dst, dst);
+      }
+
+    src.zero_out_ghost_values();
+    dst.compress(VectorOperation::add);
+  }
+
+private:
+  const DoFHandler<dim, spacedim> &dof_handler;
+  std::vector<FullMatrix<Number>>  blocks;
+
+  const WeightingType weighting_type;
+};
+
+
+
 template <int dim, int spacedim = dim>
 class Problem
 {
@@ -103,11 +267,15 @@ private:
 
   void
   setup_mg_matrices();
+
+  template <typename SmootherPreconditionerType>
   void
   estimate_eigenvalues();
 
   void
-  output_eigenvalues_and_vtk();
+  output();
+
+  Parameters prm;
 
   Triangulation<dim, spacedim> triangulation;
   DoFHandler<dim, spacedim>    dof_handler;
@@ -115,12 +283,8 @@ private:
   hp::FECollection<dim, spacedim> fe_collection;
   hp::QCollection<dim>            quadrature_collection;
 
-  using VectorType                 = Vector<double>;
-  using LevelMatrixType            = SparseMatrix<double>;
-  using SmootherPreconditionerType = PreconditionJacobi<LevelMatrixType>;
-  // MatrixFree:
-  // using LevelMatrixType = MatrixFreeOperators::LaplaceOperator<...>;
-  // using SmootherPreconditionerType = DiagonalMatrix<VectorType>;
+  using VectorType      = Vector<double>;
+  using LevelMatrixType = SparseMatrix<double>;
 
   std::vector<std::shared_ptr<const Triangulation<dim, spacedim>>>
                                            mg_triangulations;
@@ -145,58 +309,110 @@ template <int dim, int spacedim>
 void
 Problem<dim, spacedim>::setup_scenario()
 {
-  // set up L-shaped grid
-  std::vector<unsigned int> repetitions(dim);
-  Point<dim>                bottom_left, top_right;
-  for (unsigned int d = 0; d < dim; ++d)
-    if (d < 2)
+  // set up collections
+  for (unsigned int degree = 1; degree <= prm.max_degree; ++degree)
+    if (prm.fe_type == "Qp")
       {
-        repetitions[d] = 2;
-        bottom_left[d] = -1.;
-        top_right[d]   = 1.;
+        fe_collection.push_back(FE_Q<dim, spacedim>(degree));
+        quadrature_collection.push_back(QGauss<dim>(degree + 1));
+      }
+    else if (prm.fe_type == "Qp-iso-Q1")
+      {
+        fe_collection.push_back(FE_Q_iso_Q1<dim, spacedim>(degree));
+        quadrature_collection.push_back(QIterated<dim>(QGauss<1>(2), degree));
       }
     else
-      {
-        repetitions[d] = 1;
-        bottom_left[d] = 0.;
-        top_right[d]   = 1.;
-      }
+      AssertThrow(false, ExcNotImplemented());
 
-  std::vector<int> cells_to_remove(dim, 1);
-  cells_to_remove[0] = -1;
-
-  GridGenerator::subdivided_hyper_L(
-    triangulation, repetitions, bottom_left, top_right, cells_to_remove);
-
-  triangulation.refine_global(2);
-
-  // set up collections
-  for (unsigned int degree = 1; degree <= 3; ++degree)
+  // set up discretization
+  if (prm.scenario_type == "L-domain")
     {
-      fe_collection.push_back(FE_Q<dim, spacedim>(degree));
-      quadrature_collection.push_back(QGauss<dim>(degree + 1));
-    }
+      std::vector<unsigned int> repetitions(dim);
+      Point<dim>                bottom_left, top_right;
+      for (unsigned int d = 0; d < dim; ++d)
+        if (d < 2)
+          {
+            repetitions[d] = 2;
+            bottom_left[d] = -1.;
+            top_right[d]   = 1.;
+          }
+        else
+          {
+            repetitions[d] = 1;
+            bottom_left[d] = 0.;
+            top_right[d]   = 1.;
+          }
 
-  // hp-refine center part
-  Assert(dim > 1, ExcMessage("Setup works only for dim > 1."));
-  Assert(fe_collection.size() > 2, ExcMessage("We need at least two FEs."));
-  for (const auto &cell : dof_handler.active_cell_iterators() |
-                            IteratorFilters::LocallyOwnedCell())
-    {
-      // set all cells to second to last FE
-      cell->set_active_fe_index(fe_collection.size() - 2);
+      std::vector<int> cells_to_remove(dim, 1);
+      cells_to_remove[0] = -1;
 
-      const auto &center = cell->center();
-      if (std::abs(center[0]) < 0.5 && std::abs(center[1]) < 0.5)
+      GridGenerator::subdivided_hyper_L(
+        triangulation, repetitions, bottom_left, top_right, cells_to_remove);
+
+      triangulation.refine_global(2);
+
+      // hp-refine center part
+      Assert(dim > 1, ExcMessage("Setup works only for dim > 1."));
+      Assert(fe_collection.size() > 2, ExcMessage("We need at least two FEs."));
+      for (const auto &cell : dof_handler.active_cell_iterators() |
+                                IteratorFilters::LocallyOwnedCell())
         {
-          if (center[0] < -0.25 || center[1] > 0.25)
-            // outer layer gets p-refined
+          // set all cells to second to last FE
+          cell->set_active_fe_index(fe_collection.size() - 2);
+
+          const auto &center = cell->center();
+          if (std::abs(center[0]) < 0.5 && std::abs(center[1]) < 0.5)
+            {
+              if (center[0] < -0.25 || center[1] > 0.25)
+                // outer layer gets p-refined
+                cell->set_active_fe_index(fe_collection.size() - 1);
+              else
+                // inner layer gets h-refined
+                cell->set_refine_flag();
+            }
+        }
+    }
+  else if (prm.scenario_type == "two-coarse-cells")
+    {
+      std::vector<unsigned int> repetitions(dim);
+      Point<dim>                bottom_left, top_right;
+      for (unsigned int d = 0; d < dim; ++d)
+        if (d < 1)
+          {
+            repetitions[d] = 2;
+            bottom_left[d] = 0.;
+            top_right[d]   = 2.;
+          }
+        else
+          {
+            repetitions[d] = 1;
+            bottom_left[d] = 0.;
+            top_right[d]   = 1.;
+          }
+
+      GridGenerator::subdivided_hyper_rectangle(triangulation,
+                                                repetitions,
+                                                bottom_left,
+                                                top_right);
+
+      // hp-refine
+      Assert(fe_collection.size() > 2, ExcMessage("We need at least two FEs."));
+      for (const auto &cell : dof_handler.active_cell_iterators() |
+                                IteratorFilters::LocallyOwnedCell())
+        {
+          // set all cells to second to last FE
+          cell->set_active_fe_index(fe_collection.size() - 2);
+
+          if (std::abs(cell->center()[0]) < 1)
+            // left cell gets p-refined
             cell->set_active_fe_index(fe_collection.size() - 1);
           else
-            // inner layer gets h-refined
+            // right cell gets h-refined
             cell->set_refine_flag();
         }
     }
+  else
+    AssertThrow(false, ExcNotImplemented());
 
   triangulation.execute_coarsening_and_refinement();
   dof_handler.distribute_dofs(fe_collection);
@@ -289,13 +505,14 @@ Problem<dim, spacedim>::setup_mg_matrices()
 
       // Note: the following part needs to be adjusted for parallel applications
 
-      // ... constraints (with homogenous Dirichlet BC)
+      // ... constraints (with homogenous Dirichlet BC -- optional)
       constraints.clear();
       DoFTools::make_hanging_node_constraints(dof_handler, constraints);
-      VectorTools::interpolate_boundary_values(dof_handler,
-                                               0,
-                                               Functions::ZeroFunction<dim>(),
-                                               constraints);
+      if (prm.apply_homogeneous_dirichlet_bc == true)
+        {
+          VectorTools::interpolate_boundary_values(
+            dof_handler, 0, Functions::ZeroFunction<dim>(), constraints);
+        }
       constraints.close();
 
       // ... matrices
@@ -314,15 +531,13 @@ Problem<dim, spacedim>::setup_mg_matrices()
         (const Function<spacedim, typename LevelMatrixType::value_type>
            *const)nullptr,
         constraints);
-
-      // MatrixFree: ... operators
-      // [...]
     }
 }
 
 
 
 template <int dim, int spacedim>
+template <typename SmootherPreconditionerType>
 void
 Problem<dim, spacedim>::estimate_eigenvalues()
 {
@@ -338,12 +553,23 @@ Problem<dim, spacedim>::estimate_eigenvalues()
                                                                      max_level);
   for (unsigned int level = min_level; level <= max_level; level++)
     {
-      smoother_data[level].preconditioner =
-        std::make_shared<SmootherPreconditionerType>();
+      if constexpr (std::is_same_v<SmootherPreconditionerType,
+                                   PreconditionASM<double, dim, spacedim>>)
+        {
+          smoother_data[level].preconditioner =
+            std::make_shared<SmootherPreconditionerType>(
+              mg_dof_handlers[level]);
 
-      // MatrixFree:
-      // mg_matrices[level]->compute_inverse_diagonal(smoother_data[level].preconditioner->get_vector());
-      smoother_data[level].preconditioner->initialize(mg_matrices[level]);
+          smoother_data[level].preconditioner->initialize(
+            mg_matrices[level], mg_sparsity_patterns[level]);
+        }
+      else
+        {
+          smoother_data[level].preconditioner =
+            std::make_shared<SmootherPreconditionerType>();
+
+          smoother_data[level].preconditioner->initialize(mg_matrices[level]);
+        }
 
       smoother_data[level].smoothing_range     = 20.;
       smoother_data[level].degree              = 5;
@@ -359,8 +585,6 @@ Problem<dim, spacedim>::estimate_eigenvalues()
       chebyshev.initialize(mg_matrices[level], smoother_data[level]);
 
       VectorType vec;
-
-      // MatrixFree: mg_matrices[level]->initialize_dof_vector(vec);
       vec.reinit(mg_dof_handlers[level].n_dofs());
 
       const auto evs = chebyshev.estimate_eigenvalues(vec);
@@ -374,7 +598,7 @@ Problem<dim, spacedim>::estimate_eigenvalues()
 
 template <int dim, int spacedim>
 void
-Problem<dim, spacedim>::output_eigenvalues_and_vtk()
+Problem<dim, spacedim>::output()
 {
   const unsigned int min_level = mg_matrices.min_level();
   const unsigned int max_level = mg_matrices.max_level();
@@ -391,12 +615,20 @@ Problem<dim, spacedim>::output_eigenvalues_and_vtk()
       table.add_value("min_eigenvalue", min_eigenvalues[level]);
       table.add_value("max_eigenvalue", max_eigenvalues[level]);
 
-      write_vtk(mg_dof_handlers[level],
-                "mg_" + Utilities::int_to_string(dim) + "d_level-" +
-                  Utilities::int_to_string(level) + ".vtk");
+      const std::string filename = "mg_" + Utilities::int_to_string(dim) +
+                                   "d_level-" + Utilities::int_to_string(level);
+
+      if (prm.write_level_matrices == true)
+        {
+          std::ofstream output(filename + ".csv");
+          mg_matrices[level].print_formatted(output, 3, true, 0, " ", 1., ",");
+        }
+
+      if (prm.write_vtk == true)
+        write_vtk(mg_dof_handlers[level], filename + ".vtk");
     }
 
-  std::cout << dim << "d: " << std::endl;
+  std::cout << dim << "d:" << std::endl;
   table.write_text(std::cout);
 }
 
@@ -409,9 +641,17 @@ Problem<dim, spacedim>::run()
   setup_scenario();
 
   setup_mg_matrices();
-  estimate_eigenvalues();
 
-  output_eigenvalues_and_vtk();
+  if (prm.smoother_preconditioner_type == "Jacobi")
+    estimate_eigenvalues<PreconditionJacobi<LevelMatrixType>>();
+  else if (prm.smoother_preconditioner_type == "SSOR")
+    estimate_eigenvalues<PreconditionSSOR<LevelMatrixType>>();
+  else if (prm.smoother_preconditioner_type == "ASM")
+    estimate_eigenvalues<PreconditionASM<double, dim, spacedim>>();
+  else
+    AssertThrow(false, ExcNotImplemented());
+
+  output();
 }
 
 
