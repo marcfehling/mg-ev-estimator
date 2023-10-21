@@ -14,3 +14,12 @@ You need a sufficiently recent version of the deal.II library. Configure this pr
 
     cmake -DDEAL_II_DIR=/path/to/dealii .
     make
+
+Scenarios
+=========
+
+- `L-domain`:
+![L-domain](https://github.com/marcfehling/mg-ev-estimator/assets/18285973/76808327-0e72-4a4c-b908-b5842c5c6751)
+
+- `two-coarse-cells`:
+![two-coarse-cells](https://github.com/marcfehling/mg-ev-estimator/assets/18285973/679c2e5c-be04-4c35-963b-dfc6ea138fb7)
