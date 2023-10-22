@@ -31,6 +31,7 @@
 #include <deal.II/hp/q_collection.h>
 
 #include <deal.II/lac/affine_constraints.h>
+#include <deal.II/lac/lapack_full_matrix.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/sparse_matrix_tools.h>
@@ -532,6 +533,68 @@ Problem<dim, spacedim>::setup_mg_matrices()
            *const)nullptr,
         constraints);
     }
+
+  for (unsigned int level = 0; level <= maxlevel; ++level)
+    {
+      if (mg_dof_handlers[level].n_dofs() > 10000)
+        continue;
+
+      std::vector<Point<dim>> support(mg_dof_handlers[level].n_dofs());
+      DoFTools::map_dofs_to_support_points(MappingQ1<dim>(),
+                                           mg_dof_handlers[level],
+                                           support);
+      std::vector<unsigned int> at_interface;
+      for (unsigned int i = 0; i < support.size(); ++i)
+        if (std::abs(support[i][0] - 1.) < 1e-12)
+          at_interface.push_back(i);
+      const unsigned int       m = mg_matrices[level].m();
+      LAPACKFullMatrix<double> matrix(m, m);
+      for (auto it = mg_matrices[level].begin(); it != mg_matrices[level].end();
+           ++it)
+        matrix(it->row(), it->column()) = it->value();
+      for (unsigned int i = 0; i < m; ++i)
+        for (unsigned int j = 0; j < i; ++j)
+          if (std::abs(matrix(i, j) - matrix(j, i)) > 1e-12)
+            std::cout << "Matrix (" << i << " " << j
+                      << ") not symmetric: " << matrix(i, j) << " vs "
+                      << matrix(j, i) << std::endl;
+
+      LAPACKFullMatrix<double> diagonal(m, m);
+      for (unsigned int i = 0; i < m; ++i)
+        diagonal(i, i) = matrix(i, i);
+
+      // Invert block of dofs at interface
+      if (false && prm.scenario_type == "two-coarse-cells")
+        for (unsigned int i : at_interface)
+          for (unsigned int j : at_interface)
+            diagonal(i, j) = matrix(i, j);
+
+      std::vector<Vector<double>> eigenvectors(m, Vector<double>(m));
+      matrix.compute_generalized_eigenvalues_symmetric(diagonal, eigenvectors);
+      std::cout << "eigenvalues: ";
+      std::cout << matrix.eigenvalue(0).real() << " "
+                << matrix.eigenvalue(m - 3).real() << " "
+                << matrix.eigenvalue(m - 2).real() << " "
+                << matrix.eigenvalue(m - 1).real() << std::endl;
+
+      DataOutBase::VtkFlags flags;
+      flags.write_higher_order_cells = true;
+      DataOut<dim, spacedim> data_out;
+      data_out.set_flags(flags);
+      for (Vector<double> &vec : eigenvectors)
+        mg_constraints[level].distribute(vec);
+
+      data_out.attach_dof_handler(mg_dof_handlers[level]);
+      data_out.add_data_vector(eigenvectors[0], "eig0");
+      data_out.add_data_vector(eigenvectors[m - 3], "eigm3");
+      data_out.add_data_vector(eigenvectors[m - 2], "eigm2");
+      data_out.add_data_vector(eigenvectors[m - 1], "eigm1");
+      data_out.build_patches(dim == 2 ? 60 : 40);
+
+      std::ofstream output("eigenvalues-d" + std::to_string(dim) + "-l" +
+                           std::to_string(level) + ".vtk");
+      data_out.write_vtk(output);
+    }
 }
 
 
@@ -590,7 +653,10 @@ Problem<dim, spacedim>::estimate_eigenvalues()
       const auto evs = chebyshev.estimate_eigenvalues(vec);
 
       min_eigenvalues[level] = evs.min_eigenvalue_estimate;
-      max_eigenvalues[level] = evs.max_eigenvalue_estimate;
+      max_eigenvalues[level] =
+        evs.min_eigenvalue_estimate < evs.max_eigenvalue_estimate ?
+          evs.max_eigenvalue_estimate / 1.2 :
+          evs.max_eigenvalue_estimate;
     }
 }
 
