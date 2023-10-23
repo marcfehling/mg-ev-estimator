@@ -107,8 +107,10 @@ private:
   };
 
 public:
-  PreconditionASM(const DoFHandler<dim, spacedim> &dof_handler)
+  PreconditionASM(const DoFHandler<dim, spacedim> &dof_handler,
+                  const AffineConstraints<double> &affine_constraints)
     : dof_handler(dof_handler)
+    , affine_constraints(affine_constraints)
     , weighting_type(WeightingType::symm)
   {}
 
@@ -139,7 +141,14 @@ public:
 
     const auto push_back =
       [&](const std::vector<types::global_dof_index> &indices_local) {
-        indices.push_back(indices_local);
+        std::vector<types::global_dof_index> temp;
+
+        for (const auto i : indices_local)
+          if (affine_constraints.is_constrained(i) == false)
+            temp.emplace_back(i);
+
+        if (temp.empty() == false)
+          indices.push_back(temp);
       };
 
     if (version == 0)
@@ -377,6 +386,7 @@ public:
 
 private:
   const DoFHandler<dim, spacedim> &dof_handler;
+  const AffineConstraints<double> &affine_constraints;
 
   std::vector<std::vector<types::global_dof_index>> indices;
   std::vector<FullMatrix<Number>>                   blocks;
@@ -425,8 +435,11 @@ private:
   std::vector<std::shared_ptr<const Triangulation<dim, spacedim>>>
                                            mg_triangulations;
   MGLevelObject<DoFHandler<dim, spacedim>> mg_dof_handlers;
-  MGLevelObject<SparsityPattern>           mg_sparsity_patterns;
-  MGLevelObject<LevelMatrixType>           mg_matrices;
+  MGLevelObject<AffineConstraints<typename LevelMatrixType::value_type>>
+    mg_constraints;
+
+  MGLevelObject<SparsityPattern> mg_sparsity_patterns;
+  MGLevelObject<LevelMatrixType> mg_matrices;
 
   std::vector<double> min_eigenvalues;
   std::vector<double> max_eigenvalues;
@@ -586,8 +599,8 @@ Problem<dim, spacedim>::setup_mg_matrices()
       mg_dof_handlers[l].distribute_dofs(fe_collection);
     }
 
-  MGLevelObject<AffineConstraints<typename LevelMatrixType::value_type>>
-    mg_constraints(minlevel, maxlevel);
+  mg_constraints.resize(minlevel, maxlevel);
+
   for (unsigned int level = minlevel; level <= maxlevel; level++)
     {
       const auto &dof_handler      = mg_dof_handlers[level];
@@ -647,7 +660,8 @@ Problem<dim, spacedim>::estimate_eigenvalues()
   for (unsigned int level = min_level; level <= max_level; level++)
     {
       smoother_data[level].preconditioner =
-        std::make_shared<SmootherPreconditionerType>(mg_dof_handlers[level]);
+        std::make_shared<SmootherPreconditionerType>(mg_dof_handlers[level],
+                                                     mg_constraints[level]);
 
       // MatrixFree:
       // mg_matrices[level]->compute_inverse_diagonal(smoother_data[level].preconditioner->get_vector());
