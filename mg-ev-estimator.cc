@@ -91,12 +91,13 @@ namespace
 
 
 /**
- * Adopted from https://github.com/peterrum/dealii-asm/blob/d998b9b344a19c9d2890e087f953c2f93e6546ae/include/preconditioners.h#L145.
+ * Adopted from
+ * https://github.com/peterrum/dealii-asm/blob/d998b9b344a19c9d2890e087f953c2f93e6546ae/include/preconditioners.h#L145.
  */
-template<typename Number, int dim, int spacedim>
+template <typename Number, int dim, int spacedim>
 class PreconditionASM
 {
-  private:
+private:
   enum class WeightingType
   {
     none,
@@ -105,21 +106,20 @@ class PreconditionASM
     symm
   };
 
-  public:
-    PreconditionASM(const DoFHandler<dim, spacedim> &dof_handler)
+public:
+  PreconditionASM(const DoFHandler<dim, spacedim> &dof_handler)
     : dof_handler(dof_handler)
     , weighting_type(WeightingType::symm)
-    {
-    }
+  {}
 
-    template <typename GlobalSparseMatrixType, typename GlobalSparsityPattern>
-    void
-    initialize(const GlobalSparseMatrixType &global_sparse_matrix,
-               const GlobalSparsityPattern & global_sparsity_pattern)
-    {
-      if(true)
+  template <typename GlobalSparseMatrixType, typename GlobalSparsityPattern>
+  void
+  initialize(const GlobalSparseMatrixType &global_sparse_matrix,
+             const GlobalSparsityPattern  &global_sparsity_pattern)
+  {
+    if (true)
       {
-        std::vector< types::global_dof_index > indices_local;
+        std::vector<types::global_dof_index> indices_local;
 
         for (const auto &cell : dof_handler.active_cell_iterators())
           {
@@ -127,26 +127,36 @@ class PreconditionASM
               continue;
 
             indices_local.resize(cell->get_fe().n_dofs_per_cell());
-            cell-> get_dof_indices(indices_local);
+            cell->get_dof_indices(indices_local);
             indices.push_back(indices_local);
           }
-
       }
 
-      SparseMatrixTools::restrict_to_full_matrices(global_sparse_matrix,
-                                           global_sparsity_pattern,
-                                           indices,
-                                           blocks);
+    // treat unprocessed DoFs as blocks of size 1x1
+    std::vector<types::global_dof_index> unprocessed_indices(
+      dof_handler.n_dofs(), 0);
 
-      for (auto &block : blocks)
-        if (block.m() > 0 && block.n() > 0)
-          block.gauss_jordan();
-    }
+    for (const auto &indices_i : indices)
+      for (const auto i : indices_i)
+        unprocessed_indices[i]++;
 
-    template<typename VectorType>
-    void
-    vmult(VectorType & dst, const VectorType & src) const
-    {
+    for (const auto i : unprocessed_indices)
+      indices.emplace_back(std::vector<types::global_dof_index>{i});
+
+    SparseMatrixTools::restrict_to_full_matrices(global_sparse_matrix,
+                                                 global_sparsity_pattern,
+                                                 indices,
+                                                 blocks);
+
+    for (auto &block : blocks)
+      if (block.m() > 0 && block.n() > 0)
+        block.gauss_jordan();
+  }
+
+  template <typename VectorType>
+  void
+  vmult(VectorType &dst, const VectorType &src) const
+  {
     dst = 0.0;
     src.update_ghost_values();
 
@@ -211,13 +221,13 @@ class PreconditionASM
 
     src.zero_out_ghost_values();
     dst.compress(VectorOperation::add);
-    }
+  }
 
-  private:
+private:
   const DoFHandler<dim, spacedim> &dof_handler;
 
-  std::vector< std::vector< types::global_dof_index >> indices;
-  std::vector<FullMatrix<Number>>  blocks;
+  std::vector<std::vector<types::global_dof_index>> indices;
+  std::vector<FullMatrix<Number>>                   blocks;
 
   const WeightingType weighting_type;
 };
@@ -251,9 +261,9 @@ private:
   hp::FECollection<dim, spacedim> fe_collection;
   hp::QCollection<dim>            quadrature_collection;
 
-  using VectorType                 = Vector<double>;
-  using LevelMatrixType            = SparseMatrix<double>;
-  //using SmootherPreconditionerType = PreconditionJacobi<LevelMatrixType>;
+  using VectorType      = Vector<double>;
+  using LevelMatrixType = SparseMatrix<double>;
+  // using SmootherPreconditionerType = PreconditionJacobi<LevelMatrixType>;
   using SmootherPreconditionerType = PreconditionASM<double, dim, dim>;
 
   // MatrixFree:
@@ -311,16 +321,16 @@ Problem<dim, spacedim>::setup_scenario()
   // set up collections
   for (unsigned int degree = 1; degree <= 3; ++degree)
     {
-      if(true)
-      {
-      fe_collection.push_back(FE_Q<dim, spacedim>(degree));
-      quadrature_collection.push_back(QGauss<dim>(degree + 1));
-      }
+      if (true)
+        {
+          fe_collection.push_back(FE_Q<dim, spacedim>(degree));
+          quadrature_collection.push_back(QGauss<dim>(degree + 1));
+        }
       else
-      {
-      fe_collection.push_back(FE_Q_iso_Q1<dim, spacedim>(degree));
-      quadrature_collection.push_back(QIterated<dim>(QGauss<1>(2), degree));
-      }
+        {
+          fe_collection.push_back(FE_Q_iso_Q1<dim, spacedim>(degree));
+          quadrature_collection.push_back(QIterated<dim>(QGauss<1>(2), degree));
+        }
     }
 
   // hp-refine center part
@@ -489,7 +499,8 @@ Problem<dim, spacedim>::estimate_eigenvalues()
 
       // MatrixFree:
       // mg_matrices[level]->compute_inverse_diagonal(smoother_data[level].preconditioner->get_vector());
-      smoother_data[level].preconditioner->initialize(mg_matrices[level], mg_sparsity_patterns[level]);
+      smoother_data[level].preconditioner->initialize(
+        mg_matrices[level], mg_sparsity_patterns[level]);
 
       smoother_data[level].smoothing_range     = 20.;
       smoother_data[level].degree              = 5;
