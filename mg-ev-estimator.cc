@@ -121,13 +121,13 @@ public:
     //   (0) -> cell-centric patches on cells
     //
     //   (1) -> cell-centric patches on cells at refinement levels
-    //   (2) -> cell-centric patches on cells with coarser neigbor
-    //   (3) -> cell-centric patches on cells with finer neigbor
+    //   (2) -> cell-centric patches on cells with coarser neighbor
+    //   (3) -> cell-centric patches on cells with finer neighbor
     //
     // DoFs not assigned to a patch are implicityly treated as blocks
     // of size 1x1.
 
-    const unsigned int version = 3;
+    const unsigned int version = 6;
 
     if (version == 0)
       {
@@ -172,6 +172,38 @@ public:
             indices_local.resize(cell->get_fe().n_dofs_per_cell());
             cell->get_dof_indices(indices_local);
             indices.push_back(indices_local);
+          }
+      }
+    else if (version == 4 || version == 5 || version == 6)
+      {
+        std::vector<types::global_dof_index> indices_local;
+
+        for (const auto &cell : dof_handler.active_cell_iterators())
+          {
+            if (cell->is_locally_owned() == false)
+              continue;
+
+            bool flag = false;
+
+            for (const auto f : cell->face_indices())
+              if (cell->at_boundary(f) == false)
+                {
+                  if ((version == 4 || version == 5) &&
+                      (cell->level() > cell->neighbor(f)->level()))
+                    flag = true;
+
+                  if ((version == 4 || version == 6) &&
+                      (cell->neighbor(f)->has_children()))
+                    flag = true;
+
+                  if (flag == false)
+                    continue;
+
+                  indices_local.resize(cell->get_fe().n_dofs_per_face());
+                  cell->face(f)->get_dof_indices(indices_local,
+                                                 cell->active_fe_index());
+                  indices.push_back(indices_local);
+                }
           }
       }
 
