@@ -458,15 +458,15 @@ template <int dim, int spacedim>
 void
 Problem<dim, spacedim>::setup_scenario()
 {
-  // set up L-shaped grid
+  // set up two cell grid
   std::vector<unsigned int> repetitions(dim);
   Point<dim>                bottom_left, top_right;
   for (unsigned int d = 0; d < dim; ++d)
-    if (d < 2)
+    if (d < 1)
       {
         repetitions[d] = 2;
-        bottom_left[d] = -1.;
-        top_right[d]   = 1.;
+        bottom_left[d] = 0.;
+        top_right[d]   = 2.;
       }
     else
       {
@@ -475,16 +475,13 @@ Problem<dim, spacedim>::setup_scenario()
         top_right[d]   = 1.;
       }
 
-  std::vector<int> cells_to_remove(dim, 1);
-  cells_to_remove[0] = -1;
-
-  GridGenerator::subdivided_hyper_L(
-    triangulation, repetitions, bottom_left, top_right, cells_to_remove);
-
-  triangulation.refine_global(2);
+  GridGenerator::subdivided_hyper_rectangle(triangulation,
+                                            repetitions,
+                                            bottom_left,
+                                            top_right);
 
   // set up collections
-  for (unsigned int degree = 1; degree <= 3; ++degree)
+  for (unsigned int degree = 1; degree <= 8; ++degree)
     {
       if (true)
         {
@@ -507,16 +504,12 @@ Problem<dim, spacedim>::setup_scenario()
       // set all cells to second to last FE
       cell->set_active_fe_index(fe_collection.size() - 2);
 
-      const auto &center = cell->center();
-      if (std::abs(center[0]) < 0.5 && std::abs(center[1]) < 0.5)
-        {
-          if (center[0] < -0.25 || center[1] > 0.25)
-            // outer layer gets p-refined
-            cell->set_active_fe_index(fe_collection.size() - 1);
-          else
-            // inner layer gets h-refined
-            cell->set_refine_flag();
-        }
+      if (std::abs(cell->center()[0]) < 1)
+        // left cell gets p-refined
+        cell->set_active_fe_index(fe_collection.size() - 1);
+      else
+        // right cell gets h-refined
+        cell->set_refine_flag();
     }
 
   triangulation.execute_coarsening_and_refinement();
@@ -706,8 +699,9 @@ Problem<dim, spacedim>::output_eigenvalues_and_vtk()
   for (unsigned int level = min_level; level <= max_level; ++level)
     {
       table.add_value("mg", level);
-      table.add_value("n_levels",
+      table.add_value("tria_levels",
                       mg_dof_handlers[level].get_triangulation().n_levels());
+      table.add_value("n_dofs", mg_dof_handlers[level].n_dofs());
       table.add_value("max_degree",
                       get_max_active_fe_degree(mg_dof_handlers[level]));
       table.add_value("min_eigenvalue", min_eigenvalues[level]);
