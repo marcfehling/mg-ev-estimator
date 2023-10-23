@@ -137,6 +137,11 @@ public:
 
     const unsigned int version = 6;
 
+    const auto push_back =
+      [&](const std::vector<types::global_dof_index> &indices_local) {
+        indices.push_back(indices_local);
+      };
+
     if (version == 0)
       {
         std::vector<types::global_dof_index> indices_local;
@@ -148,7 +153,7 @@ public:
 
             indices_local.resize(cell->get_fe().n_dofs_per_cell());
             cell->get_dof_indices(indices_local);
-            indices.push_back(indices_local);
+            push_back(indices_local);
           }
       }
     else if (version == 1 || version == 2 || version == 3)
@@ -179,7 +184,7 @@ public:
 
             indices_local.resize(cell->get_fe().n_dofs_per_cell());
             cell->get_dof_indices(indices_local);
-            indices.push_back(indices_local);
+            push_back(indices_local);
           }
       }
     else if (version == 4 || version == 5 || version == 6)
@@ -210,7 +215,7 @@ public:
                   indices_local.resize(cell->get_fe().n_dofs_per_face());
                   cell->face(f)->get_dof_indices(indices_local,
                                                  cell->active_fe_index());
-                  indices.push_back(indices_local);
+                  push_back(indices_local);
                 }
           }
       }
@@ -253,7 +258,7 @@ public:
                       cell->face(f)->line(l)->get_dof_indices(
                         indices_local, cell->active_fe_index());
 
-                      indices.push_back(indices_local);
+                      push_back(indices_local);
 
                       processed_lines.insert(cell->face(f)->line(l)->index());
                     }
@@ -289,8 +294,15 @@ public:
                                                  blocks);
 
     for (auto &block : blocks)
-      if (block.m() > 0 && block.n() > 0)
-        block.gauss_jordan();
+      {
+        if (false)
+          {
+            block.print(std::cout);
+            std::cout << std::endl;
+          }
+        if (block.m() > 0 && block.n() > 0)
+          block.gauss_jordan();
+      }
   }
 
   template <typename VectorType>
