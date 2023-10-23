@@ -135,7 +135,7 @@ public:
     // DoFs not assigned to a patch are implicityly treated as blocks
     // of size 1x1.
 
-    const unsigned int version = 9;
+    const unsigned int version = 6;
 
     if (version == 0)
       {
