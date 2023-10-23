@@ -117,9 +117,25 @@ class PreconditionASM
     initialize(const GlobalSparseMatrixType &global_sparse_matrix,
                const GlobalSparsityPattern & global_sparsity_pattern)
     {
-      SparseMatrixTools::restrict_to_cells(global_sparse_matrix,
+      if(true)
+      {
+        std::vector< types::global_dof_index > indices_local;
+
+        for (const auto &cell : dof_handler.active_cell_iterators())
+          {
+            if (cell->is_locally_owned() == false)
+              continue;
+
+            indices_local.resize(cell->get_fe().n_dofs_per_cell());
+            cell-> get_dof_indices(indices_local);
+            indices.push_back(indices_local);
+          }
+
+      }
+
+      SparseMatrixTools::restrict_to_full_matrices(global_sparse_matrix,
                                            global_sparsity_pattern,
-                                           dof_handler,
+                                           indices,
                                            blocks);
 
       for (auto &block : blocks)
@@ -142,18 +158,16 @@ class PreconditionASM
       {
         weights.reinit(src);
 
-        for (const auto &cell : dof_handler.active_cell_iterators())
+        for (unsigned int c = 0; c < indices.size(); ++c)
           {
-            if (cell->is_locally_owned() == false)
-              continue;
-
-            const unsigned int dofs_per_cell = cell->get_fe().n_dofs_per_cell();
+            const unsigned int dofs_per_cell = indices[c].size();
             vector_weights.reinit(dofs_per_cell);
 
             for (unsigned int i = 0; i < dofs_per_cell; ++i)
               vector_weights[i] = 1.0;
 
-            cell->distribute_local_to_global(vector_weights, weights);
+            for (unsigned int i = 0; i < dofs_per_cell; ++i)
+              weights[indices[c][i]] += vector_weights[i];
           }
 
         weights.compress(VectorOperation::add);
@@ -163,35 +177,36 @@ class PreconditionASM
         weights.update_ghost_values();
       }
 
-    for (const auto &cell : dof_handler.active_cell_iterators())
+    for (unsigned int c = 0; c < indices.size(); ++c)
       {
-        if (cell->is_locally_owned() == false)
-          continue;
-
-        const unsigned int dofs_per_cell = cell->get_fe().n_dofs_per_cell();
+        const unsigned int dofs_per_cell = indices[c].size();
 
         vector_src.reinit(dofs_per_cell);
         vector_dst.reinit(dofs_per_cell);
         if (weighting_type != WeightingType::none)
           vector_weights.reinit(dofs_per_cell);
 
-        cell->get_dof_values(src, vector_src);
+        for (unsigned int i = 0; i < dofs_per_cell; ++i)
+          vector_src[i] += src[indices[c][i]];
+
         if (weighting_type != WeightingType::none)
-          cell->get_dof_values(weights, vector_weights);
+          for (unsigned int i = 0; i < dofs_per_cell; ++i)
+            vector_weights[i] += weights[indices[c][i]];
 
         if (weighting_type == WeightingType::symm ||
             weighting_type == WeightingType::right)
           for (unsigned int i = 0; i < dofs_per_cell; ++i)
             vector_src[i] *= vector_weights[i];
 
-        blocks[cell->active_cell_index()].vmult(vector_dst, vector_src);
+        blocks[c].vmult(vector_dst, vector_src);
 
         if (weighting_type == WeightingType::symm ||
             weighting_type == WeightingType::left)
           for (unsigned int i = 0; i < dofs_per_cell; ++i)
             vector_dst[i] *= vector_weights[i];
 
-        cell->distribute_local_to_global(vector_dst, dst);
+        for (unsigned int i = 0; i < dofs_per_cell; ++i)
+          dst[indices[c][i]] += vector_dst[i];
       }
 
     src.zero_out_ghost_values();
@@ -200,6 +215,8 @@ class PreconditionASM
 
   private:
   const DoFHandler<dim, spacedim> &dof_handler;
+
+  std::vector< std::vector< types::global_dof_index >> indices;
   std::vector<FullMatrix<Number>>  blocks;
 
   const WeightingType weighting_type;
@@ -294,7 +311,7 @@ Problem<dim, spacedim>::setup_scenario()
   // set up collections
   for (unsigned int degree = 1; degree <= 3; ++degree)
     {
-      if(false)
+      if(true)
       {
       fe_collection.push_back(FE_Q<dim, spacedim>(degree));
       quadrature_collection.push_back(QGauss<dim>(degree + 1));
