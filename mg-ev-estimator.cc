@@ -304,9 +304,9 @@ public:
 
     for (auto &block : blocks)
       {
-        if (false)
+        if (false && (block.m() > 1))
           {
-            block.print(std::cout);
+            block.print_formatted(std::cout, 2, false, 5, "0.00");
             std::cout << std::endl;
           }
         if (block.m() > 0 && block.n() > 0)
