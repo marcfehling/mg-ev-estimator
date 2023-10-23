@@ -118,16 +118,24 @@ public:
              const GlobalSparsityPattern  &global_sparsity_pattern)
   {
     // patch types
-    //   (0) -> cell-centric patches on cells
+    //   (0) -> cell-centric patches on cells                       X
     //
-    //   (1) -> cell-centric patches on cells at refinement levels
+    //   (1) -> cell-centric patches on cells at refinement levels  X
     //   (2) -> cell-centric patches on cells with coarser neighbor
-    //   (3) -> cell-centric patches on cells with finer neighbor
+    //   (3) -> cell-centric patches on cells with finer neighbor   X
+    //
+    //   (4) -> face-centric patches on cells at refinement levels  X
+    //   (5) -> face-centric patches on cells with coarser neighbor
+    //   (6) -> face-centric patches on cells with finer neighbor   X
+    //
+    //   (7) -> edge-centric patches on cells at refinement levels
+    //   (8) -> edge-centric patches on cells with coarser neighbor
+    //   (9) -> edge-centric patches on cells with finer neighbor   o
     //
     // DoFs not assigned to a patch are implicityly treated as blocks
     // of size 1x1.
 
-    const unsigned int version = 6;
+    const unsigned int version = 9;
 
     if (version == 0)
       {
@@ -203,6 +211,52 @@ public:
                   cell->face(f)->get_dof_indices(indices_local,
                                                  cell->active_fe_index());
                   indices.push_back(indices_local);
+                }
+          }
+      }
+    else if ((dim == 3) && (version == 7 || version == 8 || version == 9))
+      {
+        std::vector<types::global_dof_index> indices_local;
+        std::set<unsigned int>               processed_lines;
+
+        for (const auto &cell : dof_handler.active_cell_iterators())
+          {
+            if (cell->is_locally_owned() == false)
+              continue;
+
+            bool flag = false;
+
+            for (const auto f : cell->face_indices())
+              if (cell->at_boundary(f) == false)
+                {
+                  if ((version == 7 || version == 8) &&
+                      (cell->level() > cell->neighbor(f)->level()))
+                    flag = true;
+
+                  if ((version == 7 || version == 9) &&
+                      (cell->neighbor(f)->has_children()))
+                    flag = true;
+
+                  if (flag == false)
+                    continue;
+
+                  for (const auto l : cell->face(f)->line_indices())
+                    {
+                      if (processed_lines.contains(
+                            cell->face(f)->line(l)->index()))
+                        continue;
+
+                      indices_local.resize(
+                        cell->get_fe().n_dofs_per_line() +
+                        2 * cell->get_fe().n_dofs_per_vertex());
+
+                      cell->face(f)->line(l)->get_dof_indices(
+                        indices_local, cell->active_fe_index());
+
+                      indices.push_back(indices_local);
+
+                      processed_lines.insert(cell->face(f)->line(l)->index());
+                    }
                 }
           }
       }
