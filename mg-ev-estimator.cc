@@ -205,11 +205,11 @@ public:
             if (cell->is_locally_owned() == false)
               continue;
 
-            bool flag = false;
-
             for (const auto f : cell->face_indices())
               if (cell->at_boundary(f) == false)
                 {
+                  bool flag = false;
+
                   if ((version == 4 || version == 5) &&
                       (cell->level() > cell->neighbor(f)->level()))
                     flag = true;
@@ -238,11 +238,11 @@ public:
             if (cell->is_locally_owned() == false)
               continue;
 
-            bool flag = false;
-
             for (const auto f : cell->face_indices())
               if (cell->at_boundary(f) == false)
                 {
+                  bool flag = false;
+
                   if ((version == 7 || version == 8) &&
                       (cell->level() > cell->neighbor(f)->level()))
                     flag = true;
