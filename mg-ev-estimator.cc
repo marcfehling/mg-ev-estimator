@@ -17,6 +17,7 @@
 #include <deal.II/base/mg_level_object.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/signaling_nan.h>
+#include <deal.II/base/utilities.h>
 
 #include <deal.II/dofs/dof_handler.h>
 
@@ -61,6 +62,13 @@ struct Parameters
    * 1,...,max_degree.
    */
   const unsigned int max_degree = 3;
+
+  /**
+   * All p-refined cells are assigned to the finite element of degree
+   * max_degree, while all other cells get a polynomial degree of
+   * (max_degree - degree_difference).
+   */
+  const unsigned int degree_difference = 1;
 
   /**
    * Choose a predefined discretization.
@@ -353,12 +361,16 @@ Problem<dim, spacedim>::setup_scenario()
 
       // hp-refine center part
       Assert(dim > 1, ExcMessage("Setup works only for dim > 1."));
-      Assert(fe_collection.size() > 2, ExcMessage("We need at least two FEs."));
+      Assert(fe_collection.size() > prm.degree_difference,
+             ExcMessage("We need at least " +
+                        Utilities::to_string(1 + prm.degree_difference) +
+                        " FEs."));
       for (const auto &cell : dof_handler.active_cell_iterators() |
                                 IteratorFilters::LocallyOwnedCell())
         {
           // set all cells to second to last FE
-          cell->set_active_fe_index(fe_collection.size() - 2);
+          cell->set_active_fe_index(fe_collection.size() - 1 -
+                                    prm.degree_difference);
 
           const auto &center = cell->center();
           if (std::abs(center[0]) < 0.5 && std::abs(center[1]) < 0.5)
@@ -396,12 +408,16 @@ Problem<dim, spacedim>::setup_scenario()
                                                 top_right);
 
       // hp-refine
-      Assert(fe_collection.size() > 2, ExcMessage("We need at least two FEs."));
+      Assert(fe_collection.size() > prm.degree_difference,
+             ExcMessage("We need at least " +
+                        Utilities::to_string(1 + prm.degree_difference) +
+                        " FEs."));
       for (const auto &cell : dof_handler.active_cell_iterators() |
                                 IteratorFilters::LocallyOwnedCell())
         {
           // set all cells to second to last FE
-          cell->set_active_fe_index(fe_collection.size() - 2);
+          cell->set_active_fe_index(fe_collection.size() - 1 -
+                                    prm.degree_difference);
 
           if (std::abs(cell->center()[0]) < 1)
             // left cell gets p-refined
