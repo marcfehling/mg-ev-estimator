@@ -22,6 +22,7 @@
 #include <deal.II/dofs/dof_handler.h>
 
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_q_hierarchical.h>
 #include <deal.II/fe/fe_q_iso_q1.h>
 
 #include <deal.II/grid/filtered_iterator.h>
@@ -53,7 +54,7 @@ struct Parameters
   /**
    * Choose the type of finite element to be used.
    *
-   * Choices: Qp | Qp-iso-Q1
+   * Choices: Qp | Qp-iso-Q1 | Qp-hierarchical
    */
   const std::string fe_type = "Qp";
 
@@ -329,6 +330,12 @@ Problem<dim, spacedim>::setup_scenario()
         fe_collection.push_back(FE_Q_iso_Q1<dim, spacedim>(degree));
         quadrature_collection.push_back(QIterated<dim>(QGauss<1>(2), degree));
       }
+    else if (prm.fe_type == "Qp-hierarchical")
+      {
+        Assert(dim == spacedim, ExcNotImplemented());
+        fe_collection.push_back(FE_Q_Hierarchical<dim>(degree));
+        quadrature_collection.push_back(QGauss<dim>(degree + 1));
+      }
     else
       AssertThrow(false, ExcNotImplemented());
 
@@ -526,6 +533,9 @@ Problem<dim, spacedim>::setup_mg_matrices()
       DoFTools::make_hanging_node_constraints(dof_handler, constraints);
       if (prm.apply_homogeneous_dirichlet_bc == true)
         {
+          Assert(prm.apply_homogeneous_dirichlet_bc && prm.fe_type != "Qp-hierarchical",
+                 ExcMessage("Not implemented for hierarchical elements."));
+
           VectorTools::interpolate_boundary_values(
             dof_handler, 0, Functions::ZeroFunction<dim>(), constraints);
         }
