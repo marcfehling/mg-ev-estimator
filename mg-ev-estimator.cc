@@ -646,6 +646,7 @@ Problem<dim, spacedim>::output()
       table.add_value("n_dofs", mg_dof_handlers[level].n_dofs());
       table.add_value("min_eigenvalue", min_eigenvalues[level]);
       table.add_value("max_eigenvalue", max_eigenvalues[level]);
+      table.add_value("condition_number", max_eigenvalues[level] / min_eigenvalues[level]);
 
       const std::string filestem =
         description + "_level-" + Utilities::int_to_string(level);
